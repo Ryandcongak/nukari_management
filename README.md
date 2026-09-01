@@ -79,6 +79,8 @@ Menu **Panduan Penggunaan** berbentuk buku dokumentasi dengan daftar isi, bab la
 
 POS mendukung beberapa antrean keranjang sekaligus. Antrean disimpan di browser komputer kasir sehingga pelanggan dapat ditahan sementara, antrean baru dapat dilayani, lalu keranjang sebelumnya dibuka kembali. Setelah pembayaran berhasil diproses, antrean terkait dikeluarkan dari daftar.
 
+Absensi hasil impor dapat ditambah, dikoreksi, atau dihapus per karyawan dari halaman Absensi. Perubahan manual menghitung ulang keterlambatan, pulang awal, dan total kerja serta dicatat pada activity log.
+
 ## Pemeriksaan setelah perubahan
 
 ```sh
