@@ -1,0 +1,96 @@
+<?php
+require_once __DIR__ . '/helpers.php';
+
+$pageTitle = 'Edit Hutang & Piutang - Nukari';
+$error = '';
+$id = (int)($_GET['id'] ?? 0);
+
+$stmt = $pdo->prepare("SELECT * FROM debts WHERE id = :id");
+$stmt->execute([':id' => $id]);
+$debt = $stmt->fetch(PDO::FETCH_ASSOC);
+if (!$debt) {
+    redirect('pages/debts/index.php?error=Data tidak ditemukan');
+}
+
+$projects = $pdo->query("SELECT id, project_name FROM projects WHERE deleted_at IS NULL ORDER BY project_name ASC")->fetchAll(PDO::FETCH_ASSOC);
+
+if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+    try {
+        $type = in_array($_POST['type'] ?? '', ['debt','receivable'], true) ? $_POST['type'] : 'debt';
+        $related_type = in_array($_POST['related_type'] ?? '', ['supplier','client','employee','personal','project','other'], true) ? $_POST['related_type'] : 'other';
+        $related_id = !empty($_POST['related_id']) ? (int)$_POST['related_id'] : null;
+        $related_name = clean_input($_POST['related_name'] ?? '');
+        $project_id = !empty($_POST['project_id']) ? (int)$_POST['project_id'] : null;
+        $category = clean_input($_POST['category'] ?? '');
+        $issue_date = $_POST['issue_date'] ?: null;
+        $due_date = $_POST['due_date'] ?: null;
+        $amount = money_to_number($_POST['amount'] ?? 0);
+        $payment_method = $_POST['payment_method'] ?: null;
+        $description = clean_input($_POST['description'] ?? '');
+        $reminder_days_before = max((int)($_POST['reminder_days_before'] ?? 7), 0);
+        $proof_file = $debt['proof_file'] ?? null;
+        $newProof = upload_debt_file('proof_file');
+        if ($newProof) $proof_file = $newProof;
+
+        if ($related_name === '') {
+            $error = 'Nama pihak terkait wajib diisi.';
+        } elseif ($amount <= 0) {
+            $error = 'Nominal harus lebih dari 0.';
+        } elseif ((float)$debt['paid_amount'] > $amount) {
+            $error = 'Nominal tidak boleh lebih kecil dari jumlah yang sudah dibayar.';
+        } else {
+            $stmt = $pdo->prepare("
+                UPDATE debts SET
+                    type=:type, related_type=:related_type, related_id=:related_id, related_name=:related_name,
+                    project_id=:project_id, category=:category, issue_date=:issue_date, amount=:amount,
+                    due_date=:due_date, payment_method=:payment_method, proof_file=:proof_file,
+                    reminder_days_before=:reminder_days_before, description=:description, updated_at=NOW()
+                WHERE id=:id
+            ");
+            $stmt->execute([
+                ':type'=>$type, ':related_type'=>$related_type, ':related_id'=>$related_id,
+                ':related_name'=>$related_name, ':project_id'=>$project_id, ':category'=>$category ?: null,
+                ':issue_date'=>$issue_date, ':amount'=>$amount, ':due_date'=>$due_date,
+                ':payment_method'=>$payment_method, ':proof_file'=>$proof_file,
+                ':reminder_days_before'=>$reminder_days_before, ':description'=>$description ?: null, ':id'=>$id
+            ]);
+            update_debt_status($pdo, $id);
+            redirect('pages/debts/index.php?message=Data berhasil diperbarui');
+        }
+    } catch (Exception $e) {
+        $error = $e->getMessage();
+    }
+}
+
+require_once __DIR__ . '/../../includes/header.php';
+require_once __DIR__ . '/../../includes/sidebar.php';
+?>
+<main class="main-content">
+    <div class="page-header d-flex justify-content-between align-items-center flex-wrap gap-3">
+        <div><h1 class="fw-bold mb-1">Edit Hutang & Piutang</h1><p class="text-muted mb-0"><?= htmlspecialchars($debt['debt_code']); ?></p></div>
+        <a href="<?= base_url('pages/debts/index.php'); ?>" class="btn btn-outline-success"><i class="bi bi-arrow-left me-1"></i> Kembali</a>
+    </div>
+    <?php if ($error): ?><div class="alert alert-danger rounded-4"><?= htmlspecialchars($error); ?></div><?php endif; ?>
+    <div class="panel">
+        <form method="POST" enctype="multipart/form-data" class="row g-3">
+            <div class="col-md-4"><label class="form-label fw-semibold">Jenis</label><select name="type" class="form-select"><option value="debt" <?= $debt['type']==='debt'?'selected':''; ?>>Hutang</option><option value="receivable" <?= $debt['type']==='receivable'?'selected':''; ?>>Piutang</option></select></div>
+            <div class="col-md-4"><label class="form-label fw-semibold">Tipe Pihak</label><select name="related_type" class="form-select"><?php foreach(['supplier','client','employee','personal','project','other'] as $rt): ?><option value="<?= $rt; ?>" <?= ($debt['related_type'] ?? '')===$rt?'selected':''; ?>><?= ucfirst($rt); ?></option><?php endforeach; ?></select></div>
+            <div class="col-md-4"><label class="form-label fw-semibold">ID Pihak Terkait</label><input type="number" name="related_id" class="form-control" value="<?= htmlspecialchars($debt['related_id'] ?? ''); ?>"></div>
+            <div class="col-md-8"><label class="form-label fw-semibold">Nama Pihak Terkait</label><input type="text" name="related_name" class="form-control" required value="<?= htmlspecialchars($debt['related_name']); ?>"></div>
+            <div class="col-md-4"><label class="form-label fw-semibold">Kategori</label><input type="text" name="category" class="form-control" value="<?= htmlspecialchars($debt['category'] ?? ''); ?>"></div>
+            <div class="col-md-6"><label class="form-label fw-semibold">Project</label><select name="project_id" class="form-select"><option value="">Tidak terkait project</option><?php foreach($projects as $p): ?><option value="<?= $p['id']; ?>" <?= (int)$debt['project_id']===(int)$p['id']?'selected':''; ?>><?= htmlspecialchars($p['project_name']); ?></option><?php endforeach; ?></select></div>
+            <div class="col-md-6"><label class="form-label fw-semibold">Nominal</label><input type="text" name="amount" class="form-control money-input" required value="<?= number_format((float)$debt['amount'],0,',','.'); ?>"></div>
+            <div class="col-md-4"><label class="form-label fw-semibold">Tanggal Dibuat</label><input type="date" name="issue_date" class="form-control" value="<?= htmlspecialchars($debt['issue_date'] ?? ''); ?>"></div>
+            <div class="col-md-4"><label class="form-label fw-semibold">Jatuh Tempo</label><input type="date" name="due_date" class="form-control" value="<?= htmlspecialchars($debt['due_date'] ?? ''); ?>"></div>
+            <div class="col-md-4"><label class="form-label fw-semibold">Reminder H-</label><input type="number" name="reminder_days_before" class="form-control" value="<?= htmlspecialchars($debt['reminder_days_before'] ?? 7); ?>" min="0"></div>
+            <div class="col-md-6"><label class="form-label fw-semibold">Metode Pembayaran Rencana</label><select name="payment_method" class="form-select"><option value="">Belum ditentukan</option><?php foreach(['cash'=>'Cash','bank_transfer'=>'Bank Transfer','qris'=>'QRIS','other'=>'Lainnya'] as $k=>$v): ?><option value="<?= $k; ?>" <?= ($debt['payment_method'] ?? '')===$k?'selected':''; ?>><?= $v; ?></option><?php endforeach; ?></select></div>
+            <div class="col-md-6"><label class="form-label fw-semibold">Ganti Bukti / Dokumen</label><input type="file" name="proof_file" class="form-control" accept=".jpg,.jpeg,.png,.webp,.pdf"><?php if(!empty($debt['proof_file'])): ?><small><a target="_blank" href="<?= base_url($debt['proof_file']); ?>">Lihat file saat ini</a></small><?php endif; ?></div>
+            <div class="col-md-12"><label class="form-label fw-semibold">Keterangan</label><textarea name="description" rows="4" class="form-control"><?= htmlspecialchars($debt['description'] ?? ''); ?></textarea></div>
+            <div class="col-12 text-end"><button class="btn btn-nukari"><i class="bi bi-save me-1"></i> Simpan Perubahan</button></div>
+        </form>
+    </div>
+</main>
+<script>
+document.querySelectorAll('.money-input').forEach(function(input){input.addEventListener('input',function(){let value=this.value.replace(/\D/g,'');this.value=value.replace(/\B(?=(\d{3})+(?!\d))/g,'.');});});
+</script>
+<?php require_once __DIR__ . '/../../includes/footer.php'; ?>
