@@ -75,7 +75,7 @@ Tampilan global mendukung desktop, laptop, tablet, dan smartphone. Pada layar ke
 
 ## Panduan penggunaan dan POS
 
-Menu **Panduan Penggunaan** menyediakan pencarian, filter kategori, penjelasan singkat, dan tautan langsung ke fitur terkait. Gunakan halaman ini ketika operator belum mengetahui lokasi atau urutan suatu pekerjaan.
+Menu **Panduan Penggunaan** berbentuk buku dokumentasi dengan daftar isi, bab langkah demi langkah, pencarian seluruh isi, tautan antarbagian, dan tautan teks langsung ke fitur terkait. Dokumentasi juga dapat dicetak sebagai buku panduan.
 
 POS mendukung beberapa antrean keranjang sekaligus. Antrean disimpan di browser komputer kasir sehingga pelanggan dapat ditahan sementara, antrean baru dapat dilayani, lalu keranjang sebelumnya dibuka kembali. Setelah pembayaran berhasil diproses, antrean terkait dikeluarkan dari daftar.
 
