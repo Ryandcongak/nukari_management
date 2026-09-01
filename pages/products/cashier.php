@@ -408,6 +408,7 @@ require_once __DIR__ . '/_style.php';
 .cart-empty{padding:28px;text-align:center;color:#64748b;border:1px dashed #cbd5e1;border-radius:18px;}
 .qty-input,.money-input{min-width:92px;}
 .receipt-link{white-space:nowrap;}
+.pos-queue-bar{background:#fff;border:1px solid #dfe7f1;border-radius:18px;padding:14px;margin-bottom:14px}.pos-queue-list{display:flex;gap:8px;overflow-x:auto;padding:2px 0 5px;scrollbar-width:thin}.pos-queue{border:1px solid #d8e2ef;background:#f8fafc;border-radius:14px;padding:9px 12px;min-width:145px;text-align:left;position:relative}.pos-queue.active{background:#eafaf2;border-color:#16a34a;color:#106b3c}.pos-queue strong,.pos-queue span{display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.pos-queue span{font-size:11px;color:#64748b}.queue-actions{display:flex;gap:8px;flex-wrap:wrap}.queue-count{display:inline-grid;place-items:center;background:#dcfce7;color:#166534;min-width:22px;height:22px;border-radius:999px;font-size:11px;font-weight:800;margin-left:5px}
 @media(max-width:1100px){.pos-grid{grid-template-columns:1fr}.pos-product-list{grid-template-columns:1fr}}
 @media(max-width:768px){.pos-summary{grid-template-columns:1fr}.pos-hero h1{font-size:26px}.pos-search-row{grid-template-columns:1fr}}
 @media print{.sidebar,.topbar,.product-nav,.pos-hero,.no-print{display:none!important}.main-content{margin:0!important}.pos-card{box-shadow:none;border:1px solid #ddd}}
@@ -485,6 +486,13 @@ require_once __DIR__ . '/_style.php';
     </div>
 
     <section id="mode-sale">
+        <div class="pos-queue-bar no-print">
+            <div class="d-flex justify-content-between align-items-center gap-2 flex-wrap mb-2">
+                <div><strong>Antrean Keranjang</strong><div class="pos-muted">Pisahkan belanja setiap pelanggan dan lanjutkan kembali kapan saja.</div></div>
+                <div class="queue-actions"><button type="button" class="btn btn-sm btn-outline-secondary rounded-pill" onclick="renameQueue()"><i class="bi bi-pencil me-1"></i>Nama Antrean</button><button type="button" class="btn btn-sm btn-outline-danger rounded-pill" onclick="deleteQueue()"><i class="bi bi-x-lg me-1"></i>Hapus Antrean</button><button type="button" class="btn btn-sm btn-success rounded-pill" onclick="newQueue()"><i class="bi bi-plus-lg me-1"></i>Antrean Baru</button></div>
+            </div>
+            <div class="pos-queue-list" id="queueList"></div>
+        </div>
         <div class="pos-grid">
             <div class="pos-card">
                 <div class="pos-card-header">
@@ -667,7 +675,59 @@ require_once __DIR__ . '/_style.php';
 <script src="<?= base_url('assets/vendor/html5-qrcode/html5-qrcode.min.js'); ?>"></script>
 <script>
 const PRODUCTS = <?= json_encode($productJson, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES); ?>;
+const QUEUE_KEY = 'nukari_pos_queues_v1';
+const QUEUE_ACTIVE_KEY = 'nukari_pos_active_queue_v1';
+<?php if ($errors): ?>sessionStorage.removeItem('nukari_pos_paid_queue_pending');<?php endif; ?>
+let queues = [];
+let currentQueueId = '';
 let cart = [];
+
+function queueId(){ return 'q-' + Date.now() + '-' + Math.random().toString(16).slice(2,7); }
+function blankQueue(number){ return {id:queueId(), label:'Antrean ' + number, cart:[], form:{}}; }
+function loadQueues(){
+    try{ queues=JSON.parse(localStorage.getItem(QUEUE_KEY)||'[]'); }catch(e){ queues=[]; }
+    if(!Array.isArray(queues)||!queues.length) queues=[blankQueue(1)];
+    currentQueueId=localStorage.getItem(QUEUE_ACTIVE_KEY)||queues[0].id;
+    if(!queues.some(q=>q.id===currentQueueId)) currentQueueId=queues[0].id;
+    cart=queues.find(q=>q.id===currentQueueId).cart||[];
+}
+function currentQueue(){ return queues.find(q=>q.id===currentQueueId); }
+function captureQueueForm(){
+    const q=currentQueue(); if(!q) return;
+    q.cart=cart;
+    q.form={};
+    document.querySelectorAll('#checkoutForm [name]:not([name="cart_json"]):not([name="action"]):not([name="csrf_token"])').forEach(el=>q.form[el.name]=el.value);
+}
+function restoreQueueForm(){
+    const q=currentQueue(); if(!q) return;
+    document.querySelectorAll('#checkoutForm [name]').forEach(el=>{if(q.form&&Object.prototype.hasOwnProperty.call(q.form,el.name))el.value=q.form[el.name]});
+}
+function persistQueues(){
+    captureQueueForm();
+    localStorage.setItem(QUEUE_KEY,JSON.stringify(queues));
+    localStorage.setItem(QUEUE_ACTIVE_KEY,currentQueueId);
+    renderQueues();
+}
+function renderQueues(){
+    const wrap=document.getElementById('queueList'); if(!wrap)return;
+    wrap.innerHTML=queues.map(q=>{const qty=(q.cart||[]).reduce((n,i)=>n+Number(i.qty||0),0);return `<button type="button" class="pos-queue ${q.id===currentQueueId?'active':''}" onclick="switchQueue('${q.id}')"><strong>${escapeHtml(q.label)} <span class="queue-count">${formatQty(qty)}</span></strong><span>${q.cart.length} jenis produk</span></button>`}).join('');
+}
+function switchQueue(id){
+    if(id===currentQueueId)return; captureQueueForm(); currentQueueId=id;
+    const q=currentQueue(); cart=q&&Array.isArray(q.cart)?q.cart:[]; restoreQueueForm(); updateCart(); persistQueues(); focusBarcode();
+}
+function newQueue(){
+    captureQueueForm(); const q=blankQueue(queues.length+1); queues.push(q); currentQueueId=q.id; cart=q.cart; restoreQueueForm();
+    document.getElementById('checkoutForm').reset(); document.getElementById('discountAmount').value='0'; updateCart(); persistQueues(); focusBarcode();
+}
+function renameQueue(){
+    const q=currentQueue(); if(!q)return; const name=prompt('Nama antrean / pelanggan:',q.label); if(name&&name.trim()){q.label=name.trim().slice(0,40);persistQueues();}
+}
+function deleteQueue(){
+    if(queues.length===1){clearCart();return;}
+    const q=currentQueue(); if(!confirm('Hapus '+q.label+' dari antrean?'))return;
+    queues=queues.filter(item=>item.id!==currentQueueId);currentQueueId=queues[0].id;cart=currentQueue().cart||[];restoreQueueForm();updateCart();persistQueues();
+}
 
 function money(n){ return 'Rp ' + Math.round(Number(n || 0)).toLocaleString('id-ID'); }
 function parseMoney(v){ return Number(String(v||'').replace(/[^0-9,-]/g,'').replace(',', '.')) || 0; }
@@ -855,10 +915,15 @@ function updateCart(){
     document.getElementById('sumHpp').textContent = money(hpp);
     document.getElementById('sumProfit').textContent = money(profit);
     document.getElementById('cartJson').value = JSON.stringify(cart);
+    const q=currentQueue(); if(q){q.cart=cart;localStorage.setItem(QUEUE_KEY,JSON.stringify(queues));renderQueues();}
 }
 document.getElementById('checkoutForm').addEventListener('submit', e => {
-    if(cart.length < 1){ e.preventDefault(); alert('Keranjang masih kosong.'); }
+    if(cart.length < 1){ e.preventDefault(); alert('Keranjang masih kosong.'); return; }
+    if(!confirm('Proses pembayaran untuk '+(currentQueue()?.label||'antrean ini')+'?')){e.preventDefault();return;}
+    // Antrean baru dihapus oleh halaman slip setelah transaksi database sukses.
+    sessionStorage.setItem('nukari_pos_paid_queue_pending',currentQueueId);
 });
+document.getElementById('checkoutForm').addEventListener('input',()=>{captureQueueForm();localStorage.setItem(QUEUE_KEY,JSON.stringify(queues));renderQueues();});
 
 
 let barcodeScanner = null;
@@ -1068,7 +1133,7 @@ function updateCustomSummary(){
     document.getElementById('coStatus').textContent = status;
 }
 document.getElementById('customForm').addEventListener('input', updateCustomSummary);
-renderProductList(); updateCart(); updateCustomSummary();
+loadQueues(); restoreQueueForm(); renderProductList(); updateCart(); updateCustomSummary();
 </script>
 
 <?php require_once __DIR__ . '/../../includes/footer.php'; ?>

@@ -141,6 +141,10 @@ $isProductsOpen = strpos($currentPath, 'products') !== false && !$isCashierOpen;
             <i class="bi bi-bell me-2"></i> Reminder / Notifikasi
         </a>
 
+        <a class="nav-link <?= is_active_menu('help', $currentPath); ?>" href="<?= base_url('pages/help/index.php'); ?>">
+            <i class="bi bi-question-circle me-2"></i> Panduan Penggunaan
+        </a>
+
         <hr class="border-light opacity-25">
 
         <a class="nav-link" href="<?= base_url('logout.php'); ?>">

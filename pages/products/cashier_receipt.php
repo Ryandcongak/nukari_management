@@ -386,6 +386,18 @@ Informasi kegiatan dapat dikirim melalui WhatsApp/email jika data customer terse
 <script>
 (function(){
     const params = new URLSearchParams(location.search);
+    if (params.get('type') === 'sale') {
+        const pendingId = sessionStorage.getItem('nukari_pos_paid_queue_pending');
+        if (pendingId) {
+            const key = 'nukari_pos_queues_v1';
+            let queues = [];
+            try { queues = JSON.parse(localStorage.getItem(key) || '[]'); } catch (e) {}
+            queues = Array.isArray(queues) ? queues.filter(q => q.id !== pendingId) : [];
+            localStorage.setItem(key, JSON.stringify(queues));
+            localStorage.removeItem('nukari_pos_active_queue_v1');
+            sessionStorage.removeItem('nukari_pos_paid_queue_pending');
+        }
+    }
     if (params.get('print') === '1') {
         setTimeout(() => window.print(), 500);
     }
