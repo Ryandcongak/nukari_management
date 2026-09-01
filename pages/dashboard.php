@@ -135,14 +135,14 @@ $cancelledProjects = dashboard_table_exists($pdo, 'projects') && dashboard_colum
 ===================================================== */
 $totalAssets = dashboard_table_exists($pdo, 'assets') ? dashboard_scalar($pdo, "SELECT COUNT(*) FROM assets") : 0;
 $totalProducts = dashboard_table_exists($pdo, 'products') ? dashboard_scalar($pdo, "SELECT COUNT(*) FROM products") : 0;
-$totalMaterials = dashboard_table_exists($pdo, 'materials') ? dashboard_scalar($pdo, "SELECT COUNT(*) FROM materials") : 0;
+$totalMaterials = dashboard_table_exists($pdo, 'raw_materials') ? dashboard_scalar($pdo, "SELECT COUNT(*) FROM raw_materials") : 0;
 
 $todayAttendance = 0;
 $todayLate = 0;
-if (dashboard_table_exists($pdo, 'attendance') && dashboard_column_exists($pdo, 'attendance', 'attendance_date')) {
-    $todayAttendance = dashboard_scalar($pdo, "SELECT COUNT(*) FROM attendance WHERE attendance_date = CURDATE()");
-    if (dashboard_column_exists($pdo, 'attendance', 'status')) {
-        $todayLate = dashboard_scalar($pdo, "SELECT COUNT(*) FROM attendance WHERE attendance_date = CURDATE() AND status = 'late'");
+if (dashboard_table_exists($pdo, 'attendances') && dashboard_column_exists($pdo, 'attendances', 'attendance_date')) {
+    $todayAttendance = dashboard_scalar($pdo, "SELECT COUNT(*) FROM attendances WHERE attendance_date = CURDATE()");
+    if (dashboard_column_exists($pdo, 'attendances', 'status')) {
+        $todayLate = dashboard_scalar($pdo, "SELECT COUNT(*) FROM attendances WHERE attendance_date = CURDATE() AND status = 'late'");
     }
 }
 

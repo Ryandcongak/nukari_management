@@ -1,6 +1,6 @@
 <?php
 $host = getenv('NUKARI_DB_HOST') ?: 'localhost';
-$port = getenv('NUKARI_DB_PORT') ?: '3306';
+$port = getenv('NUKARI_DB_PORT') ?: '8889';
 $dbname = getenv('NUKARI_DB_NAME') ?: 'nukari_management';
 $username = getenv('NUKARI_DB_USER') ?: 'root';
 $password = getenv('NUKARI_DB_PASS');

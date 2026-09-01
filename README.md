@@ -8,12 +8,16 @@ Aplikasi manajemen internal PT Nukari Kriya Raya untuk dijalankan melalui MAMP p
 - Ekstensi PHP: PDO MySQL, mbstring, fileinfo, zip, gd.
 - Composer dependencies sudah berada di folder `vendor`.
 
+Konfigurasi bawaan mengikuti MAMP lokal: Apache `8888`, MySQL `8889`, database `nukari_management`, dan akun MySQL `root/root`.
+
 ## Menjalankan aplikasi
 
 1. Nyalakan Apache dan MySQL dari MAMP.
 2. Pastikan database `nukari_management` tersedia.
 3. Jalankan `database/migrations/001_local_foundation.sql` melalui phpMyAdmin.
 4. Buka `http://localhost:8888/nukari_management/`.
+
+Untuk instalasi baru, file dump lokal `nukari_management.sql` dapat diimpor terlebih dahulu melalui phpMyAdmin. Dump database sengaja diabaikan oleh Git karena berisi data operasional dan hash akun; file tersebut tetap tersimpan di komputer lokal.
 
 Konfigurasi bawaan tetap kompatibel dengan MAMP. Nilainya dapat ditimpa melalui environment variables yang tercantum di `.env.example`; aplikasi tidak membaca file `.env` secara otomatis.
 

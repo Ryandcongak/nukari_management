@@ -13,7 +13,7 @@
 | - File ini dipanggil sebelum sidebar.php dan sebelum <main class="main-content">.
 | - Pastikan auth.php sudah diload di halaman sebelum header.php.
 | - Notifikasi manual menggunakan tabel system_notifications.
-| - Notifikasi termin otomatis menggunakan tabel project_terms.
+| - Notifikasi termin otomatis menggunakan tabel project_payment_terms.
 */
 
 if (!isset($pageTitle)) {
@@ -76,7 +76,7 @@ if (!function_exists('nukari_priority_badge')) {
 | NOTIFIKASI UNIVERSAL
 |--------------------------------------------------------------------------
 | Sumber notifikasi:
-| 1. project_terms          -> otomatis untuk termin project.
+| 1. project_payment_terms  -> otomatis untuk termin project.
 | 2. system_notifications   -> reminder umum/manual.
 |
 | Contoh system_notifications:
@@ -103,7 +103,7 @@ if (isset($pdo)) {
         | - Due date maksimal 7 hari ke depan
         | - Termasuk yang sudah lewat jatuh tempo
         */
-        $termStmt = $pdo->prepare("\n            SELECT \n                pt.id,\n                pt.project_id,\n                pt.term_name,\n                pt.amount,\n                pt.due_date,\n                pt.status,\n                p.project_name,\n                DATEDIFF(pt.due_date, CURDATE()) AS days_left\n            FROM project_terms pt\n            JOIN projects p ON p.id = pt.project_id\n            WHERE pt.status != 'paid'\n            AND pt.due_date <= DATE_ADD(CURDATE(), INTERVAL 7 DAY)\n            ORDER BY pt.due_date ASC\n            LIMIT 20\n        ");
+        $termStmt = $pdo->prepare("\n            SELECT \n                pt.id,\n                pt.project_id,\n                pt.term_name,\n                pt.amount,\n                pt.due_date,\n                pt.status,\n                p.project_name,\n                DATEDIFF(pt.due_date, CURDATE()) AS days_left\n            FROM project_payment_terms pt\n            JOIN projects p ON p.id = pt.project_id\n            WHERE pt.status != 'paid'\n            AND pt.due_date <= DATE_ADD(CURDATE(), INTERVAL 7 DAY)\n            ORDER BY pt.due_date ASC\n            LIMIT 20\n        ");
         $termStmt->execute();
         $termNotifications = $termStmt->fetchAll(PDO::FETCH_ASSOC);
 

@@ -76,22 +76,41 @@ if (!function_exists('log_activity')) {
             $ipAddress = get_client_ip();
             $userAgent = $_SERVER['HTTP_USER_AGENT'] ?? null;
 
-            $stmt = $pdo->prepare("
-                INSERT INTO activity_logs
-                    (user_id, module, action, description, reference_id, reference_table, ip_address, user_agent, created_at)
-                VALUES
-                    (:user_id, :module, :action, :description, :reference_id, :reference_table, :ip_address, :user_agent, NOW())
-            ");
+            static $modernSchema = null;
+            if ($modernSchema === null) {
+                $columns = $pdo->query('SHOW COLUMNS FROM activity_logs')->fetchAll(PDO::FETCH_COLUMN);
+                $modernSchema = in_array('module', $columns, true) && in_array('action', $columns, true);
+            }
 
+            if ($modernSchema) {
+                $stmt = $pdo->prepare("
+                    INSERT INTO activity_logs
+                        (user_id, module, action, description, reference_id, reference_table, ip_address, user_agent, created_at)
+                    VALUES
+                        (:user_id, :module, :action, :description, :reference_id, :reference_table, :ip_address, :user_agent, NOW())
+                ");
+                return $stmt->execute([
+                    ':user_id' => $userId,
+                    ':module' => mb_substr($module, 0, 100),
+                    ':action' => mb_substr($action, 0, 100),
+                    ':description' => $description,
+                    ':reference_id' => $referenceId,
+                    ':reference_table' => $referenceTable ? mb_substr($referenceTable, 0, 100) : null,
+                    ':ip_address' => mb_substr($ipAddress, 0, 100),
+                    ':user_agent' => $userAgent,
+                ]);
+            }
+
+            $activity = trim($module . ' · ' . $action);
+            if ($referenceTable || $referenceId) {
+                $activity .= ' [' . ($referenceTable ?: 'data') . '#' . ($referenceId ?: '-') . ']';
+            }
+            $stmt = $pdo->prepare("INSERT INTO activity_logs (user_id, activity, description, ip_address, created_at) VALUES (:user_id,:activity,:description,:ip_address,NOW())");
             return $stmt->execute([
                 ':user_id' => $userId,
-                ':module' => mb_substr($module, 0, 100),
-                ':action' => mb_substr($action, 0, 100),
+                ':activity' => mb_substr($activity, 0, 255),
                 ':description' => $description,
-                ':reference_id' => $referenceId,
-                ':reference_table' => $referenceTable ? mb_substr($referenceTable, 0, 100) : null,
                 ':ip_address' => mb_substr($ipAddress, 0, 100),
-                ':user_agent' => $userAgent,
             ]);
         } catch (Throwable $e) {
             // Jangan sampai audit log membuat proses utama gagal.

@@ -3,6 +3,8 @@
 .env.*
 !.env.example
 /backups/
+/*.sql
+/*.sql.gz
 /logs/
 /vendor/
 /uploads/*
