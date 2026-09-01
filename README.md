@@ -61,7 +61,13 @@ Restore meminta konfirmasi eksplisit. Selalu buat backup baru sebelum restore.
 - Jalankan backup setiap hari kerja dan salin berkala ke drive eksternal.
 - Jangan menghapus isi folder `uploads` tanpa memeriksa referensinya dalam database.
 - Tombol WhatsApp hanya tampil bila `NUKARI_WHATSAPP` diisi. Chat AI disembunyikan secara bawaan.
-- `test_password.php` hanya alat lama dan tidak boleh digunakan pada operasional.
+- Alat pengujian password lama sudah dihapus dari aplikasi operasional.
+
+## Laporan dan perangkat
+
+Menu **Laporan** menyediakan laporan keuangan, proyek, payroll, aset, penjualan produk, dan karyawan. Setiap laporan dapat difilter, diunduh sebagai CSV berformat UTF-8 yang kompatibel dengan Excel, serta dicetak atau disimpan sebagai PDF melalui dialog Print browser.
+
+Tampilan global mendukung desktop, laptop, tablet, dan smartphone. Pada layar kecil, tabel lebar dapat digeser secara horizontal; gunakan mode landscape ketika mencetak tabel dengan banyak kolom.
 
 ## Pemeriksaan setelah perubahan
 

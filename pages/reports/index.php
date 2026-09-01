@@ -1,37 +1,20 @@
 <?php
 require_once __DIR__ . '/../../includes/auth.php';
-$pageTitle = 'Pusat Laporan - Nukari Management';
-
-function report_count(PDO $pdo, string $table): int {
-    if (!preg_match('/^[a-z_]+$/', $table)) return 0;
-    try { return (int)$pdo->query("SELECT COUNT(*) FROM `$table`")->fetchColumn(); }
-    catch (Throwable $e) { return 0; }
-}
-
-$reports = [
-    ['Keuangan', 'Ringkasan akun, arus kas, pemasukan dan pengeluaran.', 'bi-cash-stack', 'pages/finance/index.php', report_count($pdo, 'transactions') . ' transaksi'],
-    ['Proyek', 'Nilai kontrak, termin, biaya pekerja dan transaksi proyek.', 'bi-kanban', 'pages/projects/index.php', report_count($pdo, 'projects') . ' proyek'],
-    ['Payroll', 'Ringkasan gaji, komponen, pinjaman dan status pembayaran.', 'bi-wallet2', 'pages/payroll/index.php', report_count($pdo, 'payrolls') . ' payroll'],
-    ['HR Analytics', 'Kehadiran, cuti, keterlambatan dan evaluasi karyawan.', 'bi-people', 'pages/hr/analytics.php', report_count($pdo, 'employees') . ' karyawan'],
-    ['Aset', 'Nilai aset, penyusutan, maintenance dan pemasukan sewa.', 'bi-box-seam', 'pages/assets/report.php', report_count($pdo, 'assets') . ' aset'],
-    ['Produk & Stok', 'Stok, produksi, HPP, penjualan dan kontribusi program.', 'bi-recycle', 'pages/products/report.php', report_count($pdo, 'products') . ' produk'],
-    ['Hutang & Piutang', 'Posisi kewajiban, tagihan, jatuh tempo dan pembayaran.', 'bi-journal-text', 'pages/debts/index.php', report_count($pdo, 'debts') . ' catatan'],
-    ['Dana Talangan', 'Pengajuan, persetujuan dan pembayaran reimbursement.', 'bi-receipt', 'pages/reimbursements/index.php', report_count($pdo, 'reimbursements') . ' pengajuan'],
-];
-
-require_once __DIR__ . '/../../includes/header.php';
-require_once __DIR__ . '/../../includes/sidebar.php';
+require_once __DIR__ . '/report_data.php';
+$type=$_GET['type'] ?? 'finance';
+$from=nr_date($_GET['from'] ?? '', date('Y-m-01'));
+$to=nr_date($_GET['to'] ?? '', date('Y-m-d'));
+if ($from>$to) [$from,$to]=[$to,$from];
+$report=nr_report($pdo,$type,$from,$to); $type=$report['type'];
+$pageTitle=$report['definition']['title'].' - Nukari Management';
+$types=['finance'=>'Keuangan','projects'=>'Proyek','payroll'=>'Payroll','assets'=>'Aset','products'=>'Penjualan Produk','employees'=>'Karyawan'];
+require_once __DIR__ . '/../../includes/header.php'; require_once __DIR__ . '/../../includes/sidebar.php';
 ?>
-<main class="main-content">
-    <div class="page-header"><h1 class="fw-bold mb-1">Pusat Laporan</h1><p class="text-muted mb-0">Akses ringkasan dan laporan operasional dari satu tempat.</p></div>
-    <div class="row g-4">
-        <?php foreach ($reports as [$title,$description,$icon,$url,$meta]): ?>
-        <div class="col-md-6 col-xl-4"><div class="panel h-100 d-flex flex-column">
-            <div class="d-flex align-items-center gap-3 mb-3"><div class="fs-2 text-success"><i class="bi <?= htmlspecialchars($icon); ?>"></i></div><div><h5 class="fw-bold mb-0"><?= htmlspecialchars($title); ?></h5><small class="text-muted"><?= htmlspecialchars($meta); ?></small></div></div>
-            <p class="text-muted flex-grow-1"><?= htmlspecialchars($description); ?></p>
-            <a class="btn btn-outline-success" href="<?= base_url($url); ?>">Buka laporan <i class="bi bi-arrow-right ms-1"></i></a>
-        </div></div>
-        <?php endforeach; ?>
-    </div>
+<main class="main-content report-page">
+<div class="page-header report-header d-flex justify-content-between align-items-start flex-wrap gap-3"><div><div class="text-success fw-bold small text-uppercase">PT Nukari Kriya Raya</div><h1 class="fw-bold mb-1"><?= htmlspecialchars($report['definition']['title']); ?></h1><p class="text-muted mb-0"><?= htmlspecialchars($report['definition']['description']); ?></p></div><div class="report-actions d-flex flex-wrap gap-2"><a class="btn btn-outline-success" href="<?= base_url('pages/reports/export.php?'.http_build_query(['type'=>$type,'from'=>$from,'to'=>$to])); ?>"><i class="bi bi-download me-1"></i> Download CSV</a><button class="btn btn-nukari" onclick="window.print()"><i class="bi bi-printer me-1"></i> Print / PDF</button></div></div>
+<div class="panel report-filter"><form method="get" class="row g-3 align-items-end"><div class="col-xl-4 col-md-6"><label class="form-label fw-semibold">Jenis Laporan</label><select class="form-select" name="type"><?php foreach($types as $key=>$label): ?><option value="<?= $key; ?>" <?= $type===$key?'selected':''; ?>><?= htmlspecialchars($label); ?></option><?php endforeach; ?></select></div><div class="col-xl-3 col-md-3 col-6"><label class="form-label fw-semibold">Dari</label><input type="date" class="form-control" name="from" value="<?= $from; ?>"></div><div class="col-xl-3 col-md-3 col-6"><label class="form-label fw-semibold">Sampai</label><input type="date" class="form-control" name="to" value="<?= $to; ?>"></div><div class="col-xl-2 col-md-12 d-grid"><button class="btn btn-nukari"><i class="bi bi-funnel me-1"></i>Tampilkan</button></div><div class="col-12"><small class="text-muted">Filter tanggal berlaku untuk laporan transaksi. Laporan aset dan karyawan menampilkan posisi data terkini.</small></div></form></div>
+<?php if($report['error']): ?><div class="alert alert-warning"><?= htmlspecialchars($report['error']); ?></div><?php endif; ?>
+<div class="row g-3 mb-4 report-summary"><?php foreach($report['summary'] as $s): ?><div class="col-6 col-xl-3"><div class="stat-card border-<?= $s['tone']==='primary'?'blue':($s['tone']==='danger'?'red':($s['tone']==='warning'?'orange':'green')); ?>"><div class="stat-title"><?= htmlspecialchars($s['label']); ?></div><div class="stat-number report-stat"><?= htmlspecialchars($s['value']); ?></div></div></div><?php endforeach; ?></div>
+<div class="panel report-table-panel"><div class="report-print-meta d-none"><strong>Periode:</strong> <?= date('d/m/Y',strtotime($from)); ?> – <?= date('d/m/Y',strtotime($to)); ?> · <strong>Dicetak:</strong> <?= date('d/m/Y H:i'); ?></div><div class="table-responsive"><table class="table table-hover align-middle report-table"><thead><tr><?php foreach($report['definition']['headers'] as $h): ?><th><?= htmlspecialchars($h); ?></th><?php endforeach; ?></tr></thead><tbody><?php foreach($report['rows'] as $row): ?><tr><?php foreach($row as $cell): ?><td><?= htmlspecialchars((string)$cell); ?></td><?php endforeach; ?></tr><?php endforeach; ?><?php if(!$report['rows']): ?><tr><td colspan="<?= count($report['definition']['headers']); ?>" class="text-center text-muted py-5">Tidak ada data pada laporan ini.</td></tr><?php endif; ?></tbody></table></div><div class="small text-muted mt-3">Menampilkan <?= count($report['rows']); ?> baris · Periode <?= date('d M Y',strtotime($from)); ?> sampai <?= date('d M Y',strtotime($to)); ?></div></div>
 </main>
 <?php require_once __DIR__ . '/../../includes/footer.php'; ?>

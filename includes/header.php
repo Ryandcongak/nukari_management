@@ -688,6 +688,85 @@ if (isset($pdo)) {
                 width: calc(100vw - 36px);
             }
         }
+
+        /* =====================================================
+           RESPONSIVE SYSTEM: desktop, laptop, tablet, smartphone
+        ====================================================== */
+        img, video, canvas, svg { max-width: 100%; }
+        .main-content > * { min-width: 0; }
+        .table-responsive {
+            overflow-x: auto;
+            -webkit-overflow-scrolling: touch;
+            scrollbar-width: thin;
+            border-radius: 14px;
+        }
+        .table-responsive .table { margin-bottom: 0; }
+        .table td, .table th { vertical-align: middle; }
+        .btn, .form-control, .form-select { min-height: 42px; }
+        .btn-sm { min-height: 34px; }
+        .modal-dialog { max-width: min(94vw, 720px); }
+        .report-stat { font-size: clamp(1.15rem, 2.2vw, 1.8rem); overflow-wrap: anywhere; }
+
+        @media (max-width: 1199.98px) {
+            :root { --sidebar-width: 240px; }
+            .main-content { padding-left: 22px; padding-right: 22px; }
+            .panel, .stat-card { padding: 20px; }
+            .page-header { padding: 22px; }
+        }
+
+        @media (max-width: 767.98px) {
+            body { font-size: 14px; }
+            .main-content { padding: 82px 12px 16px; }
+            .nukari-topbar { left: 10px; right: 10px; top: 10px; min-height: 58px; padding: 8px 10px; }
+            .page-header { padding: 18px; border-radius: 16px; margin-bottom: 16px; }
+            .page-header h1 { font-size: clamp(1.35rem, 7vw, 1.8rem); }
+            .panel, .stat-card { padding: 16px; border-radius: 16px; margin-bottom: 16px; }
+            .stat-number { font-size: 1.35rem; }
+            .row { --bs-gutter-x: 0.9rem; }
+            .btn:not(.topbar-icon-btn):not(.btn-close) { padding: 10px 13px; }
+            .page-header .btn, .page-header .report-actions, .page-header .report-actions .btn { width: 100%; }
+            .page-header > div:last-child:not(:first-child) { width: 100%; }
+            .notification-dropdown { position: fixed !important; inset: 76px 10px auto 10px !important; width: auto; max-height: calc(100vh - 92px); transform: none !important; overflow-y: auto; }
+            .table-responsive { margin-left: -4px; margin-right: -4px; padding-bottom: 5px; }
+            .table-responsive .table { min-width: 720px; font-size: 13px; }
+            .table-responsive .table.table-sm { min-width: 620px; }
+            .table td, .table th { padding: 10px 9px; white-space: nowrap; }
+            .modal-dialog { margin: 10px auto; max-width: calc(100vw - 20px); }
+            .modal-content { max-height: calc(100vh - 20px); }
+            .modal-body { overflow-y: auto; }
+            .form-control, .form-select { font-size: 16px; } /* cegah auto-zoom iOS */
+            .nukari-floating-actions { right: 14px; bottom: 14px; }
+            .floating-action-btn { width: 48px; height: 48px; }
+            .report-summary .stat-card { min-height: 112px; }
+        }
+
+        @media (max-width: 420px) {
+            .main-content { padding-left: 9px; padding-right: 9px; }
+            .panel, .stat-card, .page-header { padding: 14px; border-radius: 14px; }
+            .report-summary > div { width: 100%; }
+            .d-flex.flex-wrap.gap-2 > .btn { flex: 1 1 auto; }
+        }
+
+        @media print {
+            @page { size: A4 landscape; margin: 10mm; }
+            body { background: #fff !important; color: #111 !important; font-size: 10pt; }
+            .sidebar, .nukari-topbar, .nukari-floating-actions, .report-filter, .report-actions, footer { display: none !important; }
+            .main-content { margin: 0 !important; padding: 0 !important; width: 100% !important; }
+            .page-header, .panel, .stat-card { box-shadow: none !important; border: 1px solid #d1d5db; }
+            .report-header { padding: 12px 14px; margin-bottom: 8px; }
+            .report-summary { margin-bottom: 8px !important; }
+            .report-summary > div { width: 25% !important; }
+            .report-summary .stat-card { padding: 10px; break-inside: avoid; }
+            .report-stat { font-size: 13pt; }
+            .report-table-panel { padding: 0; border: 0; }
+            .report-print-meta { display: block !important; margin: 8px 0; }
+            .table-responsive { overflow: visible !important; }
+            .report-table { width: 100%; font-size: 8pt; }
+            .report-table th, .report-table td { padding: 5px; white-space: normal; }
+            .report-table thead { display: table-header-group; }
+            .report-table tr { break-inside: avoid; }
+            a { color: inherit !important; text-decoration: none !important; }
+        }
     </style>
 </head>
 

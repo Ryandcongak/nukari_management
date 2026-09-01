@@ -117,6 +117,13 @@
     document.addEventListener('DOMContentLoaded', function () {
         initCurrencyInputs(document);
 
+        // Memberi petunjuk aksesibel pada tabel yang dapat digeser di layar kecil.
+        document.querySelectorAll('.table-responsive').forEach(function (wrapper) {
+            wrapper.setAttribute('tabindex', '0');
+            wrapper.setAttribute('role', 'region');
+            wrapper.setAttribute('aria-label', wrapper.getAttribute('aria-label') || 'Tabel dapat digeser ke samping');
+        });
+
         // Untuk modal/form yang muncul dinamis.
         const observer = new MutationObserver(function (mutations) {
             mutations.forEach(function (mutation) {
