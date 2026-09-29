@@ -1,14 +1,18 @@
 <?php
+require_once __DIR__ . '/functions.php';
+
 if (session_status() === PHP_SESSION_NONE) {
     ini_set('session.use_strict_mode', '1');
     ini_set('session.use_only_cookies', '1');
     ini_set('session.cookie_httponly', '1');
     ini_set('session.cookie_samesite', 'Lax');
+    ini_set('session.cookie_secure', request_is_https() ? '1' : '0');
     session_start();
 }
 
+send_security_headers();
+
 require_once __DIR__ . '/../config/database.php';
-require_once __DIR__ . '/functions.php';
 
 if (!is_logged_in()) {
     redirect('login.php');
@@ -42,6 +46,7 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
         '/pages/clients/' => ['super_admin', 'admin', 'manager', 'staff'],
         '/pages/suppliers/' => ['super_admin', 'admin', 'manager', 'staff'],
         '/pages/notifications/' => ['super_admin', 'admin', 'manager'],
+        '/pages/master/' => ['super_admin', 'admin', 'manager', 'finance'],
     ];
     foreach ($rules as $prefix => $roles) {
         if (strpos($path, $prefix) !== false) {

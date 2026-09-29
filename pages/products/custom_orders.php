@@ -60,13 +60,14 @@ if (isset($_GET['export']) && $_GET['export'] === 'csv') {
     header('Content-Disposition: attachment; filename=custom-orders-' . date('Ymd-His') . '.csv');
     echo "\xEF\xBB\xBF";
     $out = fopen('php://output', 'w');
-    fputcsv($out, ['Kode','Customer','No HP','Produk','Tanggal Order','Deadline','Qty','Satuan','Estimasi Cost','Penawaran','DP','Pelunasan','Sisa Tagihan','Profit Estimasi','Status','Deskripsi','Catatan'], ';');
+    fputcsv($out, ['Kode','Customer','No HP','Email','Produk','Tanggal Order','Deadline','Qty','Satuan','Estimasi Cost','Penawaran','DP','Pelunasan','Sisa Tagihan','Profit Estimasi','Status','Deskripsi','Catatan'], ';');
     foreach ($rows as $r) {
         $balance = (float)$r['offered_price'] - ((float)$r['down_payment'] + (float)$r['final_payment']);
         fputcsv($out, [
             $r['order_code'],
             $r['customer_name'],
             $r['customer_phone'],
+            $r['customer_email'] ?? '',
             $r['product_name'],
             $r['order_date'],
             $r['due_date'],
@@ -108,6 +109,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $id = (int)($_POST['id'] ?? 0);
         $customerName = trim($_POST['customer_name'] ?? '');
         $customerPhone = trim($_POST['customer_phone'] ?? '');
+        $customerEmail = trim($_POST['customer_email'] ?? '');
+        $clientId = (int)($_POST['client_id'] ?? 0);
         $productName = trim($_POST['product_name'] ?? '');
         $description = trim($_POST['description'] ?? '');
         $orderDate = $_POST['order_date'] ?? date('Y-m-d');
@@ -124,6 +127,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $paidAmount = $downPayment + $finalPayment;
 
         if ($customerName === '') $errors[] = 'Customer wajib diisi.';
+        if ($customerPhone === '') $errors[] = 'Nomor WhatsApp customer wajib diisi.';
         if ($productName === '') $errors[] = 'Nama produk custom wajib diisi.';
         if ($qty <= 0) $errors[] = 'Qty harus lebih besar dari 0.';
         if ($estimatedCost < 0 || $offeredPrice < 0 || $downPayment < 0 || $finalPayment < 0) $errors[] = 'Nilai uang tidak boleh minus.';
@@ -131,14 +135,21 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         if (!in_array($status, ['inquiry','approved','production','completed','cancelled'], true)) $status = 'inquiry';
 
         if (!$errors) {
-            if ($action === 'update' && $id > 0) {
-                $stmt = $pdo->prepare("UPDATE product_custom_orders SET customer_name=?, customer_phone=?, product_name=?, description=?, order_date=?, due_date=?, qty=?, unit=?, estimated_cost=?, offered_price=?, down_payment=?, final_payment=?, profit_estimate=?, status=?, notes=?, updated_at=NOW() WHERE id=?");
-                $stmt->execute([$customerName, $customerPhone, $productName, $description, $orderDate, $dueDate, $qty, $unit, $estimatedCost, $offeredPrice, $downPayment, $finalPayment, $profitEstimate, $status, $notes, $id]);
-                custom_order_redirect(['success' => 'updated']);
-            } else {
-                $stmt = $pdo->prepare("INSERT INTO product_custom_orders (order_code, customer_name, customer_phone, product_name, description, order_date, due_date, qty, unit, estimated_cost, offered_price, down_payment, final_payment, profit_estimate, status, notes, created_by, created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,NOW())");
-                $stmt->execute([product_code('CUS'), $customerName, $customerPhone, $productName, $description, $orderDate, $dueDate, $qty, $unit, $estimatedCost, $offeredPrice, $downPayment, $finalPayment, $profitEstimate, $status, $notes, product_get_user_id()]);
-                custom_order_redirect(['success' => 'created']);
+            try {
+                $pdo->beginTransaction();
+                [$clientId, $customerName, $customerPhone, $customerEmail] = product_resolve_client($pdo, $clientId, $customerName, $customerPhone, $customerEmail, true);
+                if ($action === 'update' && $id > 0) {
+                    $stmt = $pdo->prepare("UPDATE product_custom_orders SET client_id=?, customer_name=?, customer_phone=?, customer_email=?, product_name=?, description=?, order_date=?, due_date=?, qty=?, unit=?, estimated_cost=?, offered_price=?, down_payment=?, final_payment=?, profit_estimate=?, status=?, notes=?, updated_at=NOW() WHERE id=?");
+                    $stmt->execute([$clientId, $customerName, $customerPhone, $customerEmail ?: null, $productName, $description, $orderDate, $dueDate, $qty, $unit, $estimatedCost, $offeredPrice, $downPayment, $finalPayment, $profitEstimate, $status, $notes, $id]);
+                } else {
+                    $stmt = $pdo->prepare("INSERT INTO product_custom_orders (order_code, client_id, customer_name, customer_phone, customer_email, product_name, description, order_date, due_date, qty, unit, estimated_cost, offered_price, down_payment, final_payment, profit_estimate, status, notes, created_by, created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,NOW())");
+                    $stmt->execute([product_code('CUS'), $clientId, $customerName, $customerPhone, $customerEmail ?: null, $productName, $description, $orderDate, $dueDate, $qty, $unit, $estimatedCost, $offeredPrice, $downPayment, $finalPayment, $profitEstimate, $status, $notes, product_get_user_id()]);
+                }
+                $pdo->commit();
+                custom_order_redirect(['success' => $action === 'update' ? 'updated' : 'created']);
+            } catch (Throwable $e) {
+                if ($pdo->inTransaction()) $pdo->rollBack();
+                $errors[] = $e->getMessage();
             }
         }
     }
@@ -187,11 +198,14 @@ $rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
 $summary = $pdo->query("SELECT COUNT(*) total_orders, COALESCE(SUM(offered_price),0) total_offer, COALESCE(SUM(profit_estimate),0) total_profit, COALESCE(SUM(down_payment + final_payment),0) total_paid FROM product_custom_orders")->fetch(PDO::FETCH_ASSOC);
 $activeSummary = $pdo->query("SELECT COUNT(*) FROM product_custom_orders WHERE status IN ('inquiry','approved','production')")->fetchColumn();
 $overdueSummary = $pdo->query("SELECT COUNT(*) FROM product_custom_orders WHERE due_date IS NOT NULL AND due_date < CURDATE() AND status NOT IN ('completed','cancelled')")->fetchColumn();
+$clients = $pdo->query("SELECT id,client_name,phone,email FROM clients WHERE status='active' ORDER BY client_name")->fetchAll(PDO::FETCH_ASSOC);
 
 $form = $editRow ?: [
     'id' => 0,
+    'client_id' => 0,
     'customer_name' => '',
     'customer_phone' => '',
+    'customer_email' => '',
     'product_name' => '',
     'description' => '',
     'order_date' => date('Y-m-d'),
@@ -256,8 +270,10 @@ require_once __DIR__ . '/_style.php';
                             <input type="hidden" name="action" value="<?= $editRow ? 'update' : 'save'; ?>">
                             <input type="hidden" name="id" value="<?= (int)($form['id'] ?? 0); ?>">
 
-                            <div class="col-12"><label class="form-label">Customer *</label><input name="customer_name" class="form-control" value="<?= product_safe($form['customer_name']); ?>" required></div>
-                            <div class="col-12"><label class="form-label">No. HP</label><input name="customer_phone" class="form-control" value="<?= product_safe($form['customer_phone']); ?>"></div>
+                            <div class="col-12"><label class="form-label">Pilih Client</label><select name="client_id" id="customClient" class="form-select"><option value="">Client baru</option><?php foreach ($clients as $client): ?><option value="<?= (int)$client['id']; ?>" data-name="<?= product_safe($client['client_name']); ?>" data-phone="<?= product_safe($client['phone']); ?>" data-email="<?= product_safe($client['email']); ?>" <?= (int)($form['client_id'] ?? 0)===(int)$client['id']?'selected':''; ?>><?= product_safe($client['client_name']); ?><?= $client['phone'] ? ' · '.product_safe($client['phone']) : ''; ?></option><?php endforeach; ?></select><div class="small-muted mt-1">Pilih client lama atau isi data baru di bawah.</div></div>
+                            <div class="col-12"><label class="form-label">Nama Client *</label><input id="customClientName" name="customer_name" class="form-control" value="<?= product_safe($form['customer_name']); ?>" required></div>
+                            <div class="col-12"><label class="form-label">No. WhatsApp *</label><input id="customClientPhone" name="customer_phone" class="form-control" value="<?= product_safe($form['customer_phone']); ?>" required></div>
+                            <div class="col-12"><label class="form-label">Email</label><input id="customClientEmail" type="email" name="customer_email" class="form-control" value="<?= product_safe($form['customer_email'] ?? ''); ?>"></div>
                             <div class="col-12"><label class="form-label">Nama Produk Custom *</label><input name="product_name" class="form-control" value="<?= product_safe($form['product_name']); ?>" required></div>
                             <div class="col-6"><label class="form-label">Tanggal Order</label><input type="date" name="order_date" class="form-control" value="<?= product_safe($form['order_date'] ?: date('Y-m-d')); ?>"></div>
                             <div class="col-6"><label class="form-label">Deadline</label><input type="date" name="due_date" class="form-control" value="<?= product_safe($form['due_date']); ?>"></div>
@@ -390,7 +406,7 @@ require_once __DIR__ . '/_style.php';
                         <div class="row g-3">
                             <div class="col-md-6"><div class="small-muted fw-bold">Kode</div><div class="fw-bold"><?= product_safe($detailRow['order_code']); ?></div></div>
                             <div class="col-md-6"><div class="small-muted fw-bold">Status</div><div><?= custom_order_status_label($detailRow['status']); ?></div></div>
-                            <div class="col-md-6"><div class="small-muted fw-bold">Customer</div><div><?= product_safe($detailRow['customer_name']); ?> / <?= product_safe($detailRow['customer_phone']); ?></div></div>
+                            <div class="col-md-6"><div class="small-muted fw-bold">Customer</div><div><?= product_safe($detailRow['customer_name']); ?> / <?= product_safe($detailRow['customer_phone']); ?></div><?php if (!empty($detailRow['customer_email'])): ?><div class="small-muted"><?= product_safe($detailRow['customer_email']); ?></div><?php endif; ?><?php if (!empty($detailRow['client_id'])): ?><a class="small" href="<?= base_url('pages/clients/detail.php?id='.(int)$detailRow['client_id']); ?>">Buka profil client</a><?php endif; ?></div>
                             <div class="col-md-6"><div class="small-muted fw-bold">Produk</div><div><?= product_safe($detailRow['product_name']); ?> (<?= product_num($detailRow['qty']) . ' ' . product_safe($detailRow['unit']); ?>)</div></div>
                             <div class="col-md-3"><div class="small-muted fw-bold">Estimasi Cost</div><div><?= product_money($detailRow['estimated_cost']); ?></div></div>
                             <div class="col-md-3"><div class="small-muted fw-bold">Penawaran</div><div><?= product_money($detailRow['offered_price']); ?></div></div>
@@ -441,6 +457,14 @@ require_once __DIR__ . '/_style.php';
     });
     document.querySelectorAll('.qty-input').forEach(function(input){
         input.addEventListener('input', calculateSummary);
+    });
+    var clientSelect = document.getElementById('customClient');
+    if(clientSelect) clientSelect.addEventListener('change', function(){
+        var option = this.options[this.selectedIndex];
+        if(!option.value) return;
+        document.getElementById('customClientName').value = option.dataset.name || '';
+        document.getElementById('customClientPhone').value = option.dataset.phone || '';
+        document.getElementById('customClientEmail').value = option.dataset.email || '';
     });
     function calculateSummary(){
         var form = document.getElementById('customOrderForm');

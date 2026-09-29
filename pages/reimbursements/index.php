@@ -11,8 +11,13 @@ $where = [];
 $params = [];
 
 if ($q !== '') {
-    $where[] = "(r.reimbursement_code LIKE :q OR r.requester_name LIKE :q OR r.category LIKE :q OR r.description LIKE :q OR p.project_name LIKE :q)";
-    $params[':q'] = '%' . $q . '%';
+    $where[] = "(r.reimbursement_code LIKE :q_code OR r.requester_name LIKE :q_requester OR r.category LIKE :q_category OR r.description LIKE :q_description OR p.project_name LIKE :q_project)";
+    $queryValue = '%' . $q . '%';
+    $params[':q_code'] = $queryValue;
+    $params[':q_requester'] = $queryValue;
+    $params[':q_category'] = $queryValue;
+    $params[':q_description'] = $queryValue;
+    $params[':q_project'] = $queryValue;
 }
 
 if ($status !== '') {

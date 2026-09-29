@@ -12,8 +12,14 @@ $where = [];
 $params = [];
 
 if ($q !== '') {
-    $where[] = "(d.debt_code LIKE :q OR d.related_name LIKE :q OR d.category LIKE :q OR d.description LIKE :q OR d.reference_code LIKE :q OR p.project_name LIKE :q)";
-    $params[':q'] = '%' . $q . '%';
+    $where[] = "(d.debt_code LIKE :q_code OR d.related_name LIKE :q_related OR d.category LIKE :q_category OR d.description LIKE :q_description OR d.reference_code LIKE :q_reference OR p.project_name LIKE :q_project)";
+    $queryValue = '%' . $q . '%';
+    $params[':q_code'] = $queryValue;
+    $params[':q_related'] = $queryValue;
+    $params[':q_category'] = $queryValue;
+    $params[':q_description'] = $queryValue;
+    $params[':q_reference'] = $queryValue;
+    $params[':q_project'] = $queryValue;
 }
 
 if ($type !== '') {
@@ -113,9 +119,7 @@ require_once __DIR__ . '/../../includes/sidebar.php';
             <h1 class="fw-bold mb-1">Hutang & Piutang</h1>
             <p class="text-muted mb-0">Pantau hutang, piutang, sumber integrasi, pembayaran, dan transaksi keuangan.</p>
         </div>
-        <a href="<?= base_url('pages/debts/add.php'); ?>" class="btn btn-nukari">
-            <i class="bi bi-plus-circle me-1"></i> Tambah Manual
-        </a>
+        <div class="d-flex gap-2"><a href="<?= base_url('pages/finance/operational_funds.php'); ?>" class="btn btn-outline-success"><i class="bi bi-wallet2 me-1"></i> Dana Operasional</a><a href="<?= base_url('pages/debts/add.php'); ?>" class="btn btn-nukari"><i class="bi bi-plus-circle me-1"></i> Tambah Hutang/Piutang</a></div>
     </div>
 
     <?php if (!empty($_GET['message'])): ?>

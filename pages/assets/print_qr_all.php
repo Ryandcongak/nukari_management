@@ -22,7 +22,7 @@ $assets = $stmt->fetchAll(PDO::FETCH_ASSOC);
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <style>
         @page { size: A4; margin: 10mm; }
-        body { font-family: Arial, sans-serif; color: #111827; margin: 0; background: #f3f4f6; }
+        body { font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Helvetica Neue", Arial, sans-serif; color: #111827; margin: 0; background: #f3f4f6; }
         .toolbar { padding: 14px; text-align: center; }
         .toolbar button { border: 0; background: #198754; color: #fff; padding: 10px 18px; border-radius: 999px; font-weight: 700; cursor: pointer; }
         .sheet { width: 190mm; margin: 0 auto; display: grid; grid-template-columns: repeat(2, 1fr); gap: 8mm; padding: 8mm 0; }

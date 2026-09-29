@@ -1,5 +1,6 @@
 <?php
 require_once __DIR__ . '/../../includes/auth.php';
+require_once __DIR__ . '/../../includes/project_status_helper.php';
 
 $id = $_GET['id'] ?? null;
 
@@ -61,6 +62,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $delete->execute([':id' => $id]);
 
         $pdo->commit();
+        project_sync_completion_status($pdo, (int)$term['project_id']);
 
         redirect('pages/projects/terms.php?project_id=' . $term['project_id']);
     } catch (Exception $e) {

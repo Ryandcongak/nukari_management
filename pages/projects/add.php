@@ -35,11 +35,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $billing_cycle = in_array(($_POST['billing_cycle'] ?? 'none'), ['none', 'monthly', 'quarterly', 'semi_annual', 'annual', 'custom'], true) ? $_POST['billing_cycle'] : 'none';
     $billing_amount = nkr_to_number($_POST['billing_amount'] ?? 0);
     $billing_notes = clean_input($_POST['billing_notes'] ?? '');
-    $work_schedule_type = in_array(($_POST['work_schedule_type'] ?? 'project_saturday_half'), ['workshop', 'project_saturday_half', 'custom'], true) ? $_POST['work_schedule_type'] : 'project_saturday_half';
-    $saturday_work_value = (float)str_replace(',', '.', (string)($_POST['saturday_work_value'] ?? '0.5'));
-    $saturday_work_value = max(0, min(1, $saturday_work_value));
-    $sunday_work_value = (float)str_replace(',', '.', (string)($_POST['sunday_work_value'] ?? '0'));
-    $sunday_work_value = max(0, min(1, $sunday_work_value));
+    $work_schedule_type = 'all_days_full';
+    $saturday_work_value = 1.0;
+    $sunday_work_value = 1.0;
     $status = $_POST['status'] ?? 'planning';
     $notes = clean_input($_POST['notes'] ?? '');
 
@@ -255,24 +253,22 @@ require_once __DIR__ . '/../../includes/sidebar.php';
                     <div class="col-md-12">
                         <div class="p-3 rounded-4 border bg-light-subtle">
                             <div class="fw-bold mb-2"><i class="bi bi-calendar-week me-1"></i> Kalender Kerja Project</div>
-                            <p class="text-muted small mb-3">Digunakan untuk menghitung alokasi biaya employee internal ke payroll. Workshop default libur Sabtu & Minggu, sedangkan project dapat memakai Sabtu setengah hari.</p>
+                            <p class="text-muted small mb-3">Seluruh project memakai kalender seragam. Senin sampai Minggu masing-masing bernilai satu hari penuh; nilai setengah hari hanya berasal dari jam absensi aktual.</p>
                             <div class="row g-3">
                                 <div class="col-md-6">
                                     <label class="form-label fw-semibold">Pola Kerja</label>
                                     <select name="work_schedule_type" class="form-select js-work-schedule-type">
-                                        <option value="project_saturday_half" selected>Project: Minggu Libur, Sabtu 1/2 Hari</option>
-                                        <option value="workshop">Workshop: Sabtu & Minggu Libur</option>
-                                        <option value="custom">Custom</option>
+                                        <option value="all_days_full" selected>Semua Hari: 1 Hari Penuh</option>
                                     </select>
                                 </div>
                                 <div class="col-md-3">
                                     <label class="form-label fw-semibold">Nilai Sabtu</label>
-                                    <input type="number" step="0.25" min="0" max="1" name="saturday_work_value" class="form-control" value="0.5">
-                                    <small class="text-muted">0 = libur, 0.5 = setengah hari, 1 = penuh.</small>
+                                    <input type="number" name="saturday_work_value" class="form-control" value="1" readonly>
+                                    <small class="text-muted">Sama dengan hari lainnya.</small>
                                 </div>
                                 <div class="col-md-3">
                                     <label class="form-label fw-semibold">Nilai Minggu</label>
-                                    <input type="number" step="0.25" min="0" max="1" name="sunday_work_value" class="form-control" value="0">
+                                    <input type="number" name="sunday_work_value" class="form-control" value="1" readonly>
                                 </div>
                             </div>
                         </div>

@@ -1,9 +1,12 @@
 <?php
 require_once __DIR__ . '/../../includes/auth.php';
+require_once __DIR__ . '/../../includes/master_data_helper.php';
 
-$pageTitle = 'Data Karyawan - Nukari';
+$pageTitle = 'Karyawan & Internship - Nukari';
 $error = '';
 $success = '';
+$masterPositions = master_group($pdo, 'position');
+$masterDepartments = master_group($pdo, 'department');
 
 /* ============================================================
    HELPER: FORMAT TANGGAL INDONESIA
@@ -225,20 +228,31 @@ if (isset($_GET['success'])) {
 $search = clean_input($_GET['search'] ?? '');
 $statusFilter = clean_input($_GET['status'] ?? 'all');
 $departmentFilter = clean_input($_GET['department'] ?? 'all');
+$positionFilter = clean_input($_GET['position'] ?? 'all');
+
+if (!in_array($positionFilter, ['all', 'nukari', 'internship'], true)) {
+    $positionFilter = 'all';
+}
 
 $where = [];
 $params = [];
 
 if ($search !== '') {
     $where[] = "(
-        employee_code LIKE :search OR
-        fingerprint_id LIKE :search OR
-        full_name LIKE :search OR
-        position LIKE :search OR
-        department LIKE :search OR
-        phone LIKE :search
+        employee_code LIKE :search_code OR
+        fingerprint_id LIKE :search_fingerprint OR
+        full_name LIKE :search_name OR
+        position LIKE :search_position OR
+        department LIKE :search_department OR
+        phone LIKE :search_phone
     )";
-    $params[':search'] = '%' . $search . '%';
+    $searchValue = '%' . $search . '%';
+    $params[':search_code'] = $searchValue;
+    $params[':search_fingerprint'] = $searchValue;
+    $params[':search_name'] = $searchValue;
+    $params[':search_position'] = $searchValue;
+    $params[':search_department'] = $searchValue;
+    $params[':search_phone'] = $searchValue;
 }
 
 if ($statusFilter !== 'all') {
@@ -249,6 +263,12 @@ if ($statusFilter !== 'all') {
 if ($departmentFilter !== 'all') {
     $where[] = "department = :department";
     $params[':department'] = $departmentFilter;
+}
+
+if ($positionFilter === 'internship') {
+    $where[] = "LOWER(TRIM(COALESCE(position, ''))) IN ('internship', 'magang')";
+} elseif ($positionFilter === 'nukari') {
+    $where[] = "LOWER(TRIM(COALESCE(position, ''))) NOT IN ('internship', 'magang')";
 }
 
 $whereSql = $where ? 'WHERE ' . implode(' AND ', $where) : '';
@@ -291,7 +311,9 @@ $summaryStmt = $pdo->query("
         COUNT(*) AS total_employee,
         SUM(CASE WHEN employment_status = 'active' THEN 1 ELSE 0 END) AS total_active,
         SUM(CASE WHEN employment_status = 'inactive' THEN 1 ELSE 0 END) AS total_inactive,
-        SUM(CASE WHEN employment_status = 'resigned' THEN 1 ELSE 0 END) AS total_resigned
+        SUM(CASE WHEN employment_status = 'resigned' THEN 1 ELSE 0 END) AS total_resigned,
+        SUM(CASE WHEN LOWER(TRIM(COALESCE(position, ''))) NOT IN ('internship', 'magang') THEN 1 ELSE 0 END) AS total_nukari,
+        SUM(CASE WHEN LOWER(TRIM(COALESCE(position, ''))) IN ('internship', 'magang') THEN 1 ELSE 0 END) AS total_internship
     FROM employees
 ");
 $summary = $summaryStmt->fetch(PDO::FETCH_ASSOC);
@@ -363,6 +385,27 @@ require_once __DIR__ . '/../../includes/sidebar.php';
         padding-right: 0 !important;
     }
 
+    .employee-summary-link {
+        color: inherit;
+        display: block;
+        height: 100%;
+        text-decoration: none;
+    }
+
+    .employee-summary-link .panel {
+        transition: transform .18s ease, box-shadow .18s ease, border-color .18s ease;
+    }
+
+    .employee-summary-link:hover .panel,
+    .employee-summary-link:focus-visible .panel {
+        transform: translateY(-2px);
+        box-shadow: 0 12px 28px rgba(15, 23, 42, .10);
+    }
+
+    .employee-summary-link.is-active .panel {
+        border: 1px solid var(--nukari-green, #198754);
+    }
+
     @media (max-width: 576px) {
 
         #addEmployeeModal .modal-dialog,
@@ -389,12 +432,12 @@ require_once __DIR__ . '/../../includes/sidebar.php';
     ======================================================= -->
     <div class="page-header d-flex justify-content-between align-items-center flex-wrap gap-3">
         <div>
-            <h1 class="fw-bold mb-1">Data Karyawan</h1>
-            <p class="text-muted mb-0">Kelola data karyawan, fingerprint ID, status kerja, dan tanggal ulang tahun.</p>
+            <h1 class="fw-bold mb-1">Karyawan &amp; Internship</h1>
+            <p class="text-muted mb-0">Kelola data karyawan Nukari dan internship dalam satu halaman.</p>
         </div>
 
         <button class="btn btn-nukari" data-bs-toggle="modal" data-bs-target="#addEmployeeModal">
-            <i class="bi bi-plus-circle me-1"></i> Tambah Karyawan
+            <i class="bi bi-plus-circle me-1"></i> Tambah Personel
         </button>
     </div>
 
@@ -414,32 +457,58 @@ require_once __DIR__ . '/../../includes/sidebar.php';
          SUMMARY CARDS
     ======================================================= -->
     <div class="row g-3 mb-4">
-        <div class="col-lg-3 col-md-6">
-            <div class="panel h-100">
-                <div class="text-muted small">Total Karyawan</div>
-                <div class="fs-3 fw-bold"><?= (int) ($summary['total_employee'] ?? 0); ?></div>
-            </div>
+        <div class="col-xl-2 col-md-4 col-sm-6">
+            <a class="employee-summary-link <?= $statusFilter === 'all' && $positionFilter === 'all' ? 'is-active' : ''; ?>" href="<?= base_url('pages/employees/index.php'); ?>">
+                <div class="panel h-100">
+                    <div class="text-muted small">Total Personel</div>
+                    <div class="fs-3 fw-bold"><?= (int) ($summary['total_employee'] ?? 0); ?></div>
+                </div>
+            </a>
         </div>
 
-        <div class="col-lg-3 col-md-6">
-            <div class="panel h-100">
-                <div class="text-muted small">Aktif</div>
-                <div class="fs-3 fw-bold text-success"><?= (int) ($summary['total_active'] ?? 0); ?></div>
-            </div>
+        <div class="col-xl-2 col-md-4 col-sm-6">
+            <a class="employee-summary-link <?= $statusFilter === 'active' ? 'is-active' : ''; ?>" href="<?= base_url('pages/employees/index.php?status=active'); ?>">
+                <div class="panel h-100">
+                    <div class="text-muted small">Aktif</div>
+                    <div class="fs-3 fw-bold text-success"><?= (int) ($summary['total_active'] ?? 0); ?></div>
+                </div>
+            </a>
         </div>
 
-        <div class="col-lg-3 col-md-6">
-            <div class="panel h-100">
-                <div class="text-muted small">Nonaktif</div>
-                <div class="fs-3 fw-bold text-warning"><?= (int) ($summary['total_inactive'] ?? 0); ?></div>
-            </div>
+        <div class="col-xl-2 col-md-4 col-sm-6">
+            <a class="employee-summary-link <?= $statusFilter === 'inactive' ? 'is-active' : ''; ?>" href="<?= base_url('pages/employees/index.php?status=inactive'); ?>">
+                <div class="panel h-100">
+                    <div class="text-muted small">Nonaktif</div>
+                    <div class="fs-3 fw-bold text-warning"><?= (int) ($summary['total_inactive'] ?? 0); ?></div>
+                </div>
+            </a>
         </div>
 
-        <div class="col-lg-3 col-md-6">
-            <div class="panel h-100">
-                <div class="text-muted small">Resigned</div>
-                <div class="fs-3 fw-bold text-danger"><?= (int) ($summary['total_resigned'] ?? 0); ?></div>
-            </div>
+        <div class="col-xl-2 col-md-4 col-sm-6">
+            <a class="employee-summary-link <?= $statusFilter === 'resigned' ? 'is-active' : ''; ?>" href="<?= base_url('pages/employees/index.php?status=resigned'); ?>">
+                <div class="panel h-100">
+                    <div class="text-muted small">Resigned</div>
+                    <div class="fs-3 fw-bold text-danger"><?= (int) ($summary['total_resigned'] ?? 0); ?></div>
+                </div>
+            </a>
+        </div>
+
+        <div class="col-xl-2 col-md-4 col-sm-6">
+            <a class="employee-summary-link <?= $positionFilter === 'nukari' ? 'is-active' : ''; ?>" href="<?= base_url('pages/employees/index.php?position=nukari'); ?>">
+                <div class="panel h-100">
+                    <div class="text-muted small">Total Karyawan Nukari</div>
+                    <div class="fs-3 fw-bold text-primary"><?= (int) ($summary['total_nukari'] ?? 0); ?></div>
+                </div>
+            </a>
+        </div>
+
+        <div class="col-xl-2 col-md-4 col-sm-6">
+            <a class="employee-summary-link <?= $positionFilter === 'internship' ? 'is-active' : ''; ?>" href="<?= base_url('pages/employees/index.php?position=internship'); ?>">
+                <div class="panel h-100">
+                    <div class="text-muted small">Total Internship</div>
+                    <div class="fs-3 fw-bold text-info"><?= (int) ($summary['total_internship'] ?? 0); ?></div>
+                </div>
+            </a>
         </div>
     </div>
 
@@ -451,7 +520,7 @@ require_once __DIR__ . '/../../includes/sidebar.php';
             <div class="d-flex align-items-center justify-content-between flex-wrap gap-2 mb-3">
                 <div>
                     <h5 class="fw-bold mb-1"><i class="bi bi-cake2 me-1"></i> Ulang Tahun Terdekat</h5>
-                    <p class="text-muted small mb-0">Karyawan aktif yang ulang tahun dalam 30 hari ke depan.</p>
+                    <p class="text-muted small mb-0">Personel aktif yang ulang tahun dalam 30 hari ke depan.</p>
                 </div>
             </div>
 
@@ -482,8 +551,8 @@ require_once __DIR__ . '/../../includes/sidebar.php';
     ======================================================= -->
     <div class="panel mb-4">
         <form method="GET" class="row g-3 align-items-end">
-            <div class="col-lg-5 col-md-12">
-                <label class="form-label fw-semibold">Cari Karyawan</label>
+            <div class="col-xl-4 col-md-12">
+                <label class="form-label fw-semibold">Cari Personel</label>
                 <input
                     type="text"
                     name="search"
@@ -492,7 +561,7 @@ require_once __DIR__ . '/../../includes/sidebar.php';
                     placeholder="Cari nama, kode, fingerprint, posisi, departemen, telepon">
             </div>
 
-            <div class="col-lg-3 col-md-6">
+            <div class="col-xl-2 col-md-4">
                 <label class="form-label fw-semibold">Status</label>
                 <select name="status" class="form-select">
                     <option value="all" <?= $statusFilter === 'all' ? 'selected' : ''; ?>>Semua Status</option>
@@ -502,7 +571,7 @@ require_once __DIR__ . '/../../includes/sidebar.php';
                 </select>
             </div>
 
-            <div class="col-lg-3 col-md-6">
+            <div class="col-xl-2 col-md-4">
                 <label class="form-label fw-semibold">Departemen</label>
                 <select name="department" class="form-select">
                     <option value="all" <?= $departmentFilter === 'all' ? 'selected' : ''; ?>>Semua Departemen</option>
@@ -514,13 +583,22 @@ require_once __DIR__ . '/../../includes/sidebar.php';
                 </select>
             </div>
 
-            <div class="col-lg-1 col-md-12 d-grid">
+            <div class="col-xl-3 col-md-4">
+                <label class="form-label fw-semibold">Kategori</label>
+                <select name="position" class="form-select">
+                    <option value="all" <?= $positionFilter === 'all' ? 'selected' : ''; ?>>Semua Karyawan &amp; Internship</option>
+                    <option value="nukari" <?= $positionFilter === 'nukari' ? 'selected' : ''; ?>>Karyawan Nukari</option>
+                    <option value="internship" <?= $positionFilter === 'internship' ? 'selected' : ''; ?>>Internship</option>
+                </select>
+            </div>
+
+            <div class="col-xl-1 col-md-12 d-grid">
                 <button type="submit" class="btn btn-nukari">
                     <i class="bi bi-search"></i>
                 </button>
             </div>
 
-            <?php if ($search !== '' || $statusFilter !== 'all' || $departmentFilter !== 'all'): ?>
+            <?php if ($search !== '' || $statusFilter !== 'all' || $departmentFilter !== 'all' || $positionFilter !== 'all'): ?>
                 <div class="col-12">
                     <a href="<?= base_url('pages/employees/index.php'); ?>" class="btn btn-sm btn-light">
                         <i class="bi bi-x-circle me-1"></i> Reset Filter
@@ -536,7 +614,7 @@ require_once __DIR__ . '/../../includes/sidebar.php';
     <div class="panel">
         <div class="d-flex justify-content-between align-items-center flex-wrap gap-2 mb-3">
             <div>
-                <h5 class="fw-bold mb-1">Daftar Karyawan</h5>
+                <h5 class="fw-bold mb-1">Daftar Karyawan &amp; Internship</h5>
                 <p class="text-muted small mb-0">Menampilkan <?= count($employees); ?> data.</p>
             </div>
         </div>
@@ -695,7 +773,7 @@ require_once __DIR__ . '/../../includes/sidebar.php';
                     <?php else: ?>
                         <tr>
                             <td colspan="10" class="text-center text-muted py-4">
-                                Belum ada data karyawan.
+                                Belum ada data karyawan atau internship.
                             </td>
                         </tr>
                     <?php endif; ?>
@@ -716,7 +794,7 @@ require_once __DIR__ . '/../../includes/sidebar.php';
                 <input type="hidden" name="action" value="add">
 
                 <div class="modal-header">
-                    <h5 class="modal-title fw-bold">Tambah Karyawan</h5>
+                    <h5 class="modal-title fw-bold">Tambah Karyawan / Internship</h5>
                     <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
                 </div>
 
@@ -755,12 +833,12 @@ require_once __DIR__ . '/../../includes/sidebar.php';
 
                         <div class="col-md-6">
                             <label class="form-label fw-semibold">Posisi / Jabatan</label>
-                            <input type="text" name="position" class="form-control" placeholder="Contoh: Admin, Produksi, Operasional">
+                            <input type="text" name="position" class="form-control" list="masterPositionList" placeholder="Pilih atau isi jabatan">
                         </div>
 
                         <div class="col-md-6">
                             <label class="form-label fw-semibold">Departemen</label>
-                            <input type="text" name="department" class="form-control" placeholder="Contoh: Plastic, Eco Enzyme, Landscape">
+                            <input type="text" name="department" class="form-control" list="masterDepartmentList" placeholder="Pilih atau isi departemen">
                         </div>
 
                         <div class="col-md-6">
@@ -832,7 +910,7 @@ require_once __DIR__ . '/../../includes/sidebar.php';
                 <input type="hidden" name="id" id="edit_id">
 
                 <div class="modal-header">
-                    <h5 class="modal-title fw-bold">Edit Karyawan</h5>
+                    <h5 class="modal-title fw-bold">Edit Karyawan / Internship</h5>
                     <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
                 </div>
 
@@ -870,12 +948,12 @@ require_once __DIR__ . '/../../includes/sidebar.php';
 
                         <div class="col-md-6">
                             <label class="form-label fw-semibold">Posisi / Jabatan</label>
-                            <input type="text" name="position" id="edit_position" class="form-control">
+                            <input type="text" name="position" id="edit_position" class="form-control" list="masterPositionList">
                         </div>
 
                         <div class="col-md-6">
                             <label class="form-label fw-semibold">Departemen</label>
-                            <input type="text" name="department" id="edit_department" class="form-control">
+                            <input type="text" name="department" id="edit_department" class="form-control" list="masterDepartmentList">
                         </div>
 
                         <div class="col-md-6">
@@ -977,5 +1055,15 @@ require_once __DIR__ . '/../../includes/sidebar.php';
         });
     });
 </script>
+
+<datalist id="masterPositionList">
+    <option value="Internship">
+    <?php foreach ($masterPositions as $item): ?>
+        <?php if (strcasecmp(trim((string) $item['item_name']), 'Internship') !== 0): ?>
+            <option value="<?= htmlspecialchars($item['item_name']); ?>">
+        <?php endif; ?>
+    <?php endforeach; ?>
+</datalist>
+<datalist id="masterDepartmentList"><?php foreach($masterDepartments as $item): ?><option value="<?=htmlspecialchars($item['item_name']);?>"><?php endforeach; ?></datalist>
 
 <?php require_once __DIR__ . '/../../includes/footer.php'; ?>

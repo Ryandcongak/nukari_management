@@ -202,12 +202,11 @@ require_once __DIR__ . '/../../includes/sidebar.php';
                                         <i class="bi bi-pencil-square me-1"></i> Edit
                                     </a>
 
-                                    <a
-                                        href="<?= base_url('pages/projects/delete_worker.php?id=' . $w['id']); ?>"
-                                        onclick="return confirm('Yakin ingin menghapus pekerja dari project ini?')"
-                                        class="btn btn-sm btn-outline-danger">
-                                        <i class="bi bi-trash me-1"></i> Hapus
-                                    </a>
+                                    <form method="POST" action="<?= base_url('pages/projects/delete_worker.php'); ?>" class="d-inline" onsubmit="return confirm('Yakin ingin menghapus pekerja dari project ini?')">
+                                        <?= csrf_field(); ?>
+                                        <input type="hidden" name="id" value="<?= (int)$w['id']; ?>">
+                                        <button class="btn btn-sm btn-outline-danger"><i class="bi bi-trash me-1"></i> Hapus</button>
+                                    </form>
                                 </td>
                             </tr>
                         <?php endforeach; ?>

@@ -1,4 +1,6 @@
 <?php
+require_once __DIR__ . '/../../includes/finance_helper.php';
+
 if (!function_exists('asset_money_value')) {
     function asset_money_value($value) {
         $value = trim((string)$value);
@@ -27,19 +29,73 @@ if (!function_exists('asset_upload_file')) {
 }
 
 if (!function_exists('asset_create_transaction')) {
-    function asset_create_transaction(PDO $pdo, $type, $amount, $description, $paymentMethod = 'cash', $proofFile = null) {
-        $code = strtoupper($type === 'income' ? 'INC' : 'EXP') . '-AST-' . date('YmdHis');
-        $stmt = $pdo->prepare("INSERT INTO transactions (transaction_code, transaction_date, type, category_id, project_id, amount, description, payment_method, proof_file, created_by) VALUES (:code, CURDATE(), :type, NULL, NULL, :amount, :description, :payment_method, :proof_file, :created_by)");
+    function asset_create_transaction(PDO $pdo, $type, $amount, $description, $paymentMethod = 'cash', $proofFile = null, ?int $projectId = null, ?int $assetId = null, ?int $accountId = null, ?string $transactionDate = null) {
+        $amount = (float)$amount;
+        if ($amount <= 0) {
+            throw new Exception('Nominal transaksi aset wajib lebih dari nol.');
+        }
+        if ($type === 'expense') {
+            if (!$accountId) {
+                throw new Exception('Akun kas/bank wajib dipilih untuk pengeluaran aset.');
+            }
+            $accountStmt = $pdo->prepare("SELECT account_name, current_balance, status FROM finance_accounts WHERE id=:id LIMIT 1 FOR UPDATE");
+            $accountStmt->execute([':id'=>$accountId]);
+            $account = $accountStmt->fetch(PDO::FETCH_ASSOC);
+            if (!$account || ($account['status'] ?? '') !== 'active') {
+                throw new Exception('Akun pembayaran tidak ditemukan atau tidak aktif.');
+            }
+            if ((float)$account['current_balance'] < $amount) {
+                throw new Exception('Saldo akun ' . ($account['account_name'] ?? '') . ' tidak mencukupi. Saldo tersedia Rp ' . number_format((float)($account['current_balance'] ?? 0), 0, ',', '.') . ', kebutuhan Rp ' . number_format($amount, 0, ',', '.') . '.');
+            }
+        }
+        $code = strtoupper($type === 'income' ? 'INC' : 'EXP') . '-AST-' . date('YmdHis') . '-' . strtoupper(bin2hex(random_bytes(2)));
+        $stmt = $pdo->prepare("INSERT INTO transactions (transaction_code, transaction_date, type, category_id, account_id, project_id, amount, description, payment_method, proof_file, source_module, source_table, source_id, created_by) VALUES (:code, :transaction_date, :type, NULL, :account_id, :project_id, :amount, :description, :payment_method, :proof_file, 'asset', 'assets', :source_id, :created_by)");
         $stmt->execute([
             ':code' => $code,
+            ':transaction_date' => $transactionDate ?: date('Y-m-d'),
             ':type' => $type,
             ':amount' => $amount,
             ':description' => $description,
             ':payment_method' => $paymentMethod,
             ':proof_file' => $proofFile,
+            ':project_id' => $projectId ?: null,
+            ':account_id' => $accountId ?: null,
+            ':source_id' => $assetId ?: null,
             ':created_by' => $_SESSION['user_id'] ?? null,
         ]);
+        $transactionId = (int)$pdo->lastInsertId();
+        if ($accountId && function_exists('finance_recalculate_account_balance')) {
+            finance_recalculate_account_balance($pdo, $accountId);
+        }
+        return $transactionId;
+    }
+}
+
+if (!function_exists('asset_create_project_mirror')) {
+    function asset_create_project_mirror(PDO $pdo, int $projectId, string $type, float $amount, string $category, string $description, string $sourceModule, int $sourceId, string $paymentMethod = 'cash', ?int $accountId = null, ?string $transactionDate = null): int {
+        $stmt = $pdo->prepare("INSERT INTO project_transactions (project_id, transaction_date, transaction_type, funding_source, account_id, payment_method, category, description, amount, is_asset, source_module, source_id) VALUES (:project_id, :transaction_date, :transaction_type, 'company', :account_id, :payment_method, :category, :description, :amount, 0, :source_module, :source_id)");
+        $stmt->execute([
+            ':project_id' => $projectId,
+            ':transaction_date' => $transactionDate ?: date('Y-m-d'),
+            ':transaction_type' => $type,
+            ':account_id' => $accountId ?: null,
+            ':payment_method' => $paymentMethod,
+            ':category' => $category,
+            ':description' => $description,
+            ':amount' => $amount,
+            ':source_module' => $sourceModule,
+            ':source_id' => $sourceId,
+        ]);
         return (int)$pdo->lastInsertId();
+    }
+}
+
+if (!function_exists('asset_assert_available_for_rental')) {
+    function asset_assert_available_for_rental(array $asset): void {
+        if (in_array($asset['asset_status'] ?? '', ['sold', 'lost', 'disposed', 'damaged', 'maintenance'], true)
+            || in_array($asset['condition_status'] ?? '', ['lost', 'damaged', 'maintenance'], true)) {
+            throw new Exception('Aset yang rusak, hilang, maintenance, dihapuskan, atau sudah dijual tidak dapat disewakan.');
+        }
     }
 }
 
@@ -55,6 +111,28 @@ if (!function_exists('asset_create_notification')) {
             ':priority' => $priority,
             ':icon' => $icon,
             ':link_url' => $linkUrl,
+        ]);
+        return (int)$pdo->lastInsertId();
+    }
+}
+
+if (!function_exists('asset_create_maintenance_reminder')) {
+    function asset_create_maintenance_reminder(PDO $pdo, int $assetId, string $type, string $title, string $description, string $dueDate, int $reminderDays = 7): int {
+        $allowed = ['service','oil_change','vehicle_tax','stnk','insurance','kir','calibration','inspection','other'];
+        $type = in_array($type, $allowed, true) ? $type : 'other';
+        $link = 'pages/assets/detail.php?id=' . $assetId . '#maintenance';
+        $notificationId = asset_create_notification($pdo, 'asset_maintenance', $title, $description, $dueDate, 'warning', 'bi-tools', $link);
+        $stmt = $pdo->prepare("INSERT INTO asset_reminders (asset_id, reminder_type, title, description, due_date, remind_before_days, priority, status, notification_id, link_url, created_by) VALUES (:asset_id,:reminder_type,:title,:description,:due_date,:remind_before_days,'warning','active',:notification_id,:link_url,:created_by)");
+        $stmt->execute([
+            ':asset_id'=>$assetId,
+            ':reminder_type'=>$type,
+            ':title'=>$title,
+            ':description'=>$description,
+            ':due_date'=>$dueDate,
+            ':remind_before_days'=>max(0, $reminderDays),
+            ':notification_id'=>$notificationId,
+            ':link_url'=>$link,
+            ':created_by'=>$_SESSION['user_id'] ?? null,
         ]);
         return (int)$pdo->lastInsertId();
     }

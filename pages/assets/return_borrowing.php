@@ -1,8 +1,9 @@
 <?php
 require_once __DIR__ . '/../../includes/auth.php';
 require_once __DIR__ . '/asset_helpers.php';
-$borrowId = (int)($_POST['borrowing_id'] ?? $_GET['id'] ?? 0);
-$assetId = (int)($_POST['asset_id'] ?? $_GET['asset_id'] ?? 0);
+require_post();
+$borrowId = (int)($_POST['borrowing_id'] ?? 0);
+$assetId = (int)($_POST['asset_id'] ?? 0);
 if ($borrowId <= 0) redirect('pages/assets/index.php');
 try {
     $returnCondition = $_POST['return_condition'] ?? 'good';

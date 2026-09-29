@@ -1,6 +1,7 @@
 <?php
 require_once __DIR__ . '/../../includes/auth.php';
 require_once __DIR__ . '/product_helpers.php';
+require_once __DIR__ . '/../../includes/master_data_helper.php';
 
 $id=(int)($_GET['id']??0);
 $stmt=$pdo->prepare("SELECT * FROM products WHERE id=?");
@@ -35,13 +36,13 @@ function product_upload_photo_edit($old = null, $field = 'photo') {
 }
 
 if($_SERVER['REQUEST_METHOD']==='POST'){
-    $hpp=product_parse_number($_POST['hpp_price']??0);
+    $basePrice=product_parse_number($_POST['base_price']??0);
     $sell=product_parse_number($_POST['selling_price']??0);
     $barcode = trim($_POST['barcode_code'] ?? '') ?: trim($_POST['product_code'] ?? ($p['product_code'] ?? ''));
     $photo = product_upload_photo_edit($p['photo'] ?? null, 'photo');
 
     $stmt=$pdo->prepare("UPDATE products SET
-        product_code=?,barcode_code=?,barcode_type=?,product_name=?,category=?,product_type=?,description=?,production_cost=?,hpp_price=?,selling_price=?,profit_estimate=?,stock=?,unit=?,minimum_stock=?,photo=?,marketplace_tokopedia=?,marketplace_shopee=?,contribution_percent=?,contribution_program_name=?,contribution_event_name=?,contribution_event_date=?,status=?,updated_at=NOW()
+        product_code=?,barcode_code=?,barcode_type=?,product_name=?,category=?,product_type=?,description=?,base_price=?,track_stock=?,production_cost=?,hpp_price=?,selling_price=?,profit_estimate=?,stock=?,unit=?,minimum_stock=?,photo=?,marketplace_tokopedia=?,marketplace_shopee=?,contribution_percent=?,contribution_program_name=?,contribution_event_name=?,contribution_event_date=?,status=?,updated_at=NOW()
         WHERE id=?");
     $stmt->execute([
         trim($_POST['product_code']),
@@ -49,12 +50,14 @@ if($_SERVER['REQUEST_METHOD']==='POST'){
         'code128',
         trim($_POST['product_name']),
         trim($_POST['category']??''),
-        $_POST['product_type']??'recycle',
+        $_POST['product_type']??($p['product_type']??'other'),
         trim($_POST['description']??''),
-        $hpp,
-        $hpp,
+        $basePrice,
+        isset($_POST['track_stock']) ? 1 : 0,
+        $basePrice,
+        $basePrice,
         $sell,
-        $sell-$hpp,
+        $sell-$basePrice,
         product_parse_number($_POST['stock']??0),
         trim($_POST['unit']??'pcs'),
         product_parse_number($_POST['minimum_stock']??0),
@@ -122,19 +125,13 @@ require_once __DIR__.'/_style.php';
                         <div class="col-md-4"><label class="form-label">Kode Barcode</label><input name="barcode_code" class="form-control" value="<?= product_safe($p['barcode_code'] ?? $p['product_code']); ?>"><div class="input-hint">Kode ini yang akan discan kasir/bazar.</div></div>
                         <div class="col-md-4"><label class="form-label">Nama Produk *</label><input name="product_name" class="form-control" required value="<?= product_safe($p['product_name']); ?>"></div>
                         <div class="col-md-4"><label class="form-label">Kategori</label><input name="category" class="form-control" value="<?= product_safe($p['category']); ?>"></div>
-                        <div class="col-md-4"><label class="form-label">Tipe Produk</label><select name="product_type" class="form-select"><?php foreach(['recycle'=>'Recycle','eco_enzyme'=>'Eco Enzyme','custom'=>'Custom','service'=>'Service','other'=>'Other'] as $k=>$v): ?><option value="<?= $k; ?>" <?= ($p['product_type']===$k?'selected':''); ?>><?= $v; ?></option><?php endforeach; ?></select></div>
                         <div class="col-md-4"><label class="form-label">Status</label><select name="status" class="form-select"><option value="active" <?= $p['status']==='active'?'selected':''; ?>>Active</option><option value="inactive" <?= $p['status']==='inactive'?'selected':''; ?>>Inactive</option></select></div>
                         <div class="col-md-3"><label class="form-label">Stok</label><input name="stock" class="form-control qty-input" value="<?= product_num($p['stock']??0); ?>"></div>
-                        <div class="col-md-3"><label class="form-label">Satuan</label><input name="unit" class="form-control" value="<?= product_safe($p['unit']); ?>"></div>
+                        <div class="col-md-3"><label class="form-label">Satuan</label><input name="unit" class="form-control" list="productUnitList" value="<?= product_safe($p['unit']); ?>"><?= master_datalist($pdo,'unit','productUnitList'); ?></div>
                         <div class="col-md-3"><label class="form-label">Minimum Stok</label><input name="minimum_stock" class="form-control qty-input" value="<?= product_num($p['minimum_stock']??0); ?>"></div>
-                        <div class="col-md-3"><label class="form-label">HPP / Unit</label><input name="hpp_price" class="form-control money-input" value="<?= product_num($p['hpp_price']??$p['production_cost'],2); ?>"></div>
+                        <div class="col-md-3"><label class="form-label">Harga Dasar</label><input name="base_price" class="form-control money-input" value="<?= product_num($p['base_price']??$p['hpp_price']??0,2); ?>"></div>
                         <div class="col-md-4"><label class="form-label">Harga Jual</label><input name="selling_price" class="form-control money-input" value="<?= product_num($p['selling_price'],2); ?>"></div>
-                        <div class="col-md-4"><label class="form-label">Link Tokopedia</label><input name="marketplace_tokopedia" class="form-control" value="<?= product_safe($p['marketplace_tokopedia']??''); ?>"></div>
-                        <div class="col-md-4"><label class="form-label">Link Shopee</label><input name="marketplace_shopee" class="form-control" value="<?= product_safe($p['marketplace_shopee']??''); ?>"></div>
-                        <div class="col-md-3"><label class="form-label">Potongan Program Sosial (%)</label><input name="contribution_percent" class="form-control qty-input" value="<?= product_num($p['contribution_percent'] ?? 0,2); ?>"></div>
-                        <div class="col-md-3"><label class="form-label">Nama Program</label><input name="contribution_program_name" class="form-control" value="<?= product_safe($p['contribution_program_name'] ?? ''); ?>"></div>
-                        <div class="col-md-3"><label class="form-label">Nama Event</label><input name="contribution_event_name" class="form-control" value="<?= product_safe($p['contribution_event_name'] ?? ''); ?>"></div>
-                        <div class="col-md-3"><label class="form-label">Tanggal Event</label><input type="date" name="contribution_event_date" class="form-control" value="<?= product_safe($p['contribution_event_date'] ?? ''); ?>"></div>
+                        <div class="col-md-4"><label class="form-label">Kontrol Stok</label><div class="form-check form-switch mt-2"><input class="form-check-input" type="checkbox" name="track_stock" value="1" <?=($p['track_stock']??1)?'checked':'';?>><label class="form-check-label">Kurangi stok saat terjual</label></div></div>
                         <div class="col-12"><label class="form-label">Deskripsi / Catatan</label><textarea name="description" class="form-control" rows="4"><?= product_safe($p['description']); ?></textarea></div>
                         <div class="col-12 d-flex gap-2"><button class="btn btn-success btn-rounded">Update</button><a href="index.php" class="btn btn-outline-secondary btn-rounded">Kembali</a></div>
                     </div>

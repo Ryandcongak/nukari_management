@@ -1,5 +1,6 @@
 <?php
 require_once __DIR__ . '/../../includes/auth.php';
+require_once __DIR__ . '/../../includes/master_data_helper.php';
 $pageTitle = 'Edit Aset - Nukari';
 $error = '';
 $id = (int)($_GET['id'] ?? 0);
@@ -87,8 +88,8 @@ $stmt->execute([':id' => $id]);
 $asset = $stmt->fetch(PDO::FETCH_ASSOC);
 if (!$asset) redirect('pages/assets/index.php');
 
-if (isset($_GET['delete_photo'])) {
-    $photoId = (int)$_GET['delete_photo'];
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') === 'delete_photo') {
+    $photoId = (int)($_POST['photo_id'] ?? 0);
     $ph = $pdo->prepare("SELECT * FROM project_asset_photos WHERE id=:id AND asset_id=:asset_id LIMIT 1");
     $ph->execute([':id' => $photoId, ':asset_id' => $id]);
     $photo = $ph->fetch(PDO::FETCH_ASSOC);
@@ -122,6 +123,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         ':asset_status' => clean_input($_POST['asset_status'] ?? 'active'),
         ':ownership_status' => clean_input($_POST['ownership_status'] ?? 'owned'),
         ':use_type' => clean_input($_POST['use_type'] ?? 'internal'),
+        ':maintenance_required' => isset($_POST['maintenance_required']) ? 1 : 0,
         ':current_value' => asset_money_value($_POST['current_value'] ?? 0),
         ':warranty_until' => ($_POST['warranty_until'] ?? '') ?: null,
         ':location' => clean_input($_POST['location'] ?? ''),
@@ -170,6 +172,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     asset_status=:asset_status,
                     ownership_status=:ownership_status,
                     use_type=:use_type,
+                    maintenance_required=:maintenance_required,
                     location=:location,
                     responsible_employee_id=:responsible_employee_id,
                     notes=:notes,
@@ -270,7 +273,7 @@ require_once __DIR__ . '/../../includes/sidebar.php';
 
                     <div class="col-md-4">
                         <label class="form-label fw-semibold">Kategori</label>
-                        <input name="category" class="form-control" value="<?= htmlspecialchars($asset['category'] ?? ''); ?>">
+                        <input name="category" class="form-control" list="assetCategoryList" value="<?= htmlspecialchars($asset['category'] ?? ''); ?>"><?= master_datalist($pdo,'asset_category','assetCategoryList'); ?>
                     </div>
                     <div class="col-md-4">
                         <label class="form-label fw-semibold">Tanggal Beli</label>
@@ -323,7 +326,10 @@ require_once __DIR__ . '/../../includes/sidebar.php';
                     </div>
                     <div class="col-md-4">
                         <label class="form-label fw-semibold">Lokasi</label>
-                        <input name="location" class="form-control" value="<?= htmlspecialchars($asset['location'] ?? ''); ?>">
+                        <input name="location" class="form-control" list="assetLocationList" value="<?= htmlspecialchars($asset['location'] ?? ''); ?>"><?= master_datalist($pdo,'location','assetLocationList'); ?>
+                    </div>
+                    <div class="col-md-4 d-flex align-items-end">
+                        <div class="form-check mb-3"><input class="form-check-input" type="checkbox" name="maintenance_required" value="1" id="maintenanceRequired" <?= !empty($asset['maintenance_required'])?'checked':''; ?>><label class="form-check-label fw-semibold" for="maintenanceRequired">Memerlukan maintenance berkala</label></div>
                     </div>
                     <div class="col-md-4">
                         <label class="form-label fw-semibold">Penanggung Jawab</label>
@@ -384,9 +390,12 @@ require_once __DIR__ . '/../../includes/sidebar.php';
                         <?php foreach ($photos as $ph): ?>
                             <div class="asset-photo-item">
                                 <img src="<?= base_url($ph['image_path']); ?>" alt="Foto Aset">
-                                <a class="btn btn-sm btn-danger del" onclick="return confirm('Hapus foto ini?')" href="<?= base_url('pages/assets/edit.php?id=' . $id . '&delete_photo=' . (int)$ph['id']); ?>">
-                                    <i class="bi bi-trash"></i>
-                                </a>
+                                <form method="POST" class="del" onsubmit="return confirm('Hapus foto ini?')">
+                                    <?= csrf_field(); ?>
+                                    <input type="hidden" name="action" value="delete_photo">
+                                    <input type="hidden" name="photo_id" value="<?= (int)$ph['id']; ?>">
+                                    <button class="btn btn-sm btn-danger" title="Hapus foto"><i class="bi bi-trash"></i></button>
+                                </form>
                             </div>
                         <?php endforeach; ?>
                     </div>

@@ -1,5 +1,6 @@
 <?php
 require_once __DIR__ . '/../../includes/auth.php';
+require_once __DIR__ . '/../../includes/employee_funding_helper.php';
 
 $pageTitle = 'Kasbon Karyawan - Nukari';
 
@@ -48,6 +49,7 @@ $employeeStmt = $pdo->query("
     ORDER BY full_name ASC
 ");
 $employees = $employeeStmt->fetchAll(PDO::FETCH_ASSOC);
+$fundingOptions=employee_funding_options($pdo);
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $action = $_POST['action'] ?? '';
@@ -101,6 +103,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     $proofPath = 'uploads/cash_advances/' . $newFileName;
                 }
 
+                $pdo->beginTransaction();
                 $stmt = $pdo->prepare("
                     INSERT INTO employee_cash_advances (
                         employee_id,
@@ -110,7 +113,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                         deduction_month,
                         proof_file,
                         status,
-                        notes
+                        notes,funding_source,account_id,operational_fund_id,funding_party_id,disbursement_status,payment_method,created_by
                     ) VALUES (
                         :employee_id,
                         :advance_date,
@@ -119,7 +122,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                         :deduction_month,
                         :proof_file,
                         'active',
-                        :notes
+                        :notes,:funding_source,:account_id,:operational_fund_id,:funding_party_id,'disbursed',:payment_method,:created_by
                     )
                 ");
 
@@ -130,31 +133,20 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     ':remaining_amount' => $amount,
                     ':deduction_month' => $deductionMonth,
                     ':proof_file' => $proofPath,
-                    ':notes' => $notes !== '' ? $notes : null
+                    ':notes' => $notes !== '' ? $notes : null,
+                    ':funding_source'=>$_POST['funding_source']??'company',':account_id'=>($_POST['account_id']??'')?:null,':operational_fund_id'=>($_POST['operational_fund_id']??'')?:null,':funding_party_id'=>($_POST['funding_party_id']??'')?:null,':payment_method'=>$_POST['payment_method']??'cash',':created_by'=>$_SESSION['user_id']??null
                 ]);
+                $cashId=(int)$pdo->lastInsertId();
+                $links=employee_funding_disburse($pdo,'employee_cash_advances',$cashId,$amount,$advanceDate,$_POST['funding_source']??'company',(int)($_POST['account_id']??0),(int)($_POST['operational_fund_id']??0),(int)($_POST['funding_party_id']??0),$_POST['payment_method']??'cash','Pencairan kasbon karyawan #'.$cashId,$_SESSION['user_id']??null);
+                $pdo->prepare("UPDATE employee_cash_advances SET transaction_id=:tx,debt_id=:debt WHERE id=:id")->execute([':tx'=>$links['transaction_id'],':debt'=>$links['debt_id'],':id'=>$cashId]);
+                $pdo->commit();
 
                 $success = 'Kasbon berhasil ditambahkan. Jangan lupa Generate / Recalculate Payroll agar masuk sebagai potongan.';
                 $month = $deductionMonth;
             } catch (Exception $e) {
+                if($pdo->inTransaction())$pdo->rollBack();
                 $error = 'Gagal menambahkan kasbon: ' . $e->getMessage();
             }
-        }
-    }
-
-    if ($action === 'mark_paid') {
-        $cashId = (int)($_POST['cash_id'] ?? 0);
-
-        if ($cashId > 0) {
-            $stmt = $pdo->prepare("
-                UPDATE employee_cash_advances
-                SET status = 'paid',
-                    remaining_amount = 0,
-                    updated_at = NOW()
-                WHERE id = :id
-            ");
-            $stmt->execute([':id' => $cashId]);
-
-            $success = 'Kasbon berhasil ditandai lunas.';
         }
     }
 
@@ -162,15 +154,15 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $cashId = (int)($_POST['cash_id'] ?? 0);
 
         if ($cashId > 0) {
-            $stmt = $pdo->prepare("
-                UPDATE employee_cash_advances
-                SET status = 'cancelled',
-                    updated_at = NOW()
-                WHERE id = :id
-            ");
-            $stmt->execute([':id' => $cashId]);
-
-            $success = 'Kasbon berhasil dibatalkan.';
+            try {
+                $pdo->beginTransaction();
+                employee_funding_cancel($pdo,'employee_cash_advances',$cashId);
+                $pdo->commit();
+                $success = 'Kasbon berhasil dibatalkan dan sumber dana dikembalikan.';
+            } catch (Exception $e) {
+                if($pdo->inTransaction())$pdo->rollBack();
+                $error = 'Gagal membatalkan kasbon: '.$e->getMessage();
+            }
         }
     }
 
@@ -179,6 +171,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
         if ($cashId > 0) {
             try {
+                $pdo->beginTransaction();
+                employee_funding_assert_reversible($pdo,'employee_cash_advances',$cashId);
+                employee_funding_clear($pdo,'employee_cash_advances',$cashId);
                 $stmt = $pdo->prepare("
                     SELECT proof_file
                     FROM employee_cash_advances
@@ -201,9 +196,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     WHERE id = :id
                 ");
                 $deleteStmt->execute([':id' => $cashId]);
+                $pdo->commit();
 
                 $success = 'Data kasbon berhasil dihapus permanen.';
             } catch (Exception $e) {
+                if($pdo->inTransaction())$pdo->rollBack();
                 $error = 'Gagal menghapus kasbon: ' . $e->getMessage();
             }
         }
@@ -219,13 +216,18 @@ $where[] = "eca.deduction_month = :month";
 
 if ($keyword !== '') {
     $where[] = "(
-        e.full_name LIKE :keyword
-        OR e.employee_code LIKE :keyword
-        OR e.position LIKE :keyword
-        OR e.department LIKE :keyword
-        OR eca.notes LIKE :keyword
+        e.full_name LIKE :keyword_name
+        OR e.employee_code LIKE :keyword_code
+        OR e.position LIKE :keyword_position
+        OR e.department LIKE :keyword_department
+        OR eca.notes LIKE :keyword_notes
     )";
-    $params[':keyword'] = '%' . $keyword . '%';
+    $keywordValue = '%' . $keyword . '%';
+    $params[':keyword_name'] = $keywordValue;
+    $params[':keyword_code'] = $keywordValue;
+    $params[':keyword_position'] = $keywordValue;
+    $params[':keyword_department'] = $keywordValue;
+    $params[':keyword_notes'] = $keywordValue;
 }
 
 if ($statusFilter !== '') {
@@ -241,9 +243,16 @@ $stmt = $pdo->prepare("
         e.full_name,
         e.employee_code,
         e.position,
-        e.department
+        e.department,
+        fa.account_name, ofu.fund_code, ofu.person_name AS fund_person_name,
+        COALESCE(fp.display_name,ofu.person_name) AS fund_holder_name,
+        cp.display_name AS funding_party_name
     FROM employee_cash_advances eca
     JOIN employees e ON eca.employee_id = e.id
+    LEFT JOIN finance_accounts fa ON fa.id=eca.account_id
+    LEFT JOIN operational_funds ofu ON ofu.id=eca.operational_fund_id
+    LEFT JOIN company_parties fp ON fp.id=ofu.holder_party_id
+    LEFT JOIN company_parties cp ON cp.id=eca.funding_party_id
     WHERE {$whereSql}
     ORDER BY eca.advance_date DESC, e.full_name ASC
 ");
@@ -383,6 +392,12 @@ require_once __DIR__ . '/../../includes/sidebar.php';
                 <small class="text-muted">JPG, PNG, PDF. Maks 5MB.</small>
             </div>
 
+            <div class="col-md-3"><label class="form-label fw-semibold">Sumber Dana</label><select name="funding_source" class="form-select funding-source"><option value="company">Kas/Bank Perusahaan</option><option value="operational_fund">Dana Operasional PIC</option><option value="party_advance">Talangan Pihak/PIC</option></select></div>
+            <div class="col-md-3 funding-choice" data-source="company"><label class="form-label">Akun Kas/Bank</label><select name="account_id" class="form-select"><option value="">Pilih akun</option><?php foreach($fundingOptions['accounts'] as $a):?><option value="<?=$a['id'];?>"><?=htmlspecialchars($a['account_name']);?> · <?=cash_money($a['current_balance']);?></option><?php endforeach;?></select></div>
+            <div class="col-md-3 funding-choice d-none" data-source="operational_fund"><label class="form-label">Dana Operasional PIC</label><select name="operational_fund_id" class="form-select"><option value="">Pilih dana</option><?php foreach($fundingOptions['funds'] as $f):?><option value="<?=$f['id'];?>"><?=htmlspecialchars($f['display_name']?:$f['person_name']);?> · <?=cash_money($f['current_balance']);?></option><?php endforeach;?></select></div>
+            <div class="col-md-3 funding-choice d-none" data-source="party_advance"><label class="form-label">Pihak/PIC Penalang</label><select name="funding_party_id" class="form-select"><option value="">Pilih pihak</option><?php foreach($fundingOptions['parties'] as $p):?><option value="<?=$p['id'];?>"><?=htmlspecialchars($p['display_name']);?></option><?php endforeach;?></select></div>
+            <div class="col-md-3"><label class="form-label">Metode</label><select name="payment_method" class="form-select"><option value="cash">Cash</option><option value="bank_transfer">Transfer</option><option value="qris">QRIS</option><option value="other">Lainnya</option></select></div>
+
             <div class="col-md-12">
                 <label class="form-label fw-semibold">Catatan</label>
                 <textarea name="notes" class="form-control" rows="2" placeholder="Contoh: Kasbon kebutuhan pribadi / operasional"></textarea>
@@ -458,6 +473,7 @@ require_once __DIR__ . '/../../includes/sidebar.php';
                         <th>Tanggal</th>
                         <th>Bulan Potong</th>
                         <th>Nominal</th>
+                        <th>Sumber Dana</th>
                         <th>Sisa</th>
                         <th>Bukti</th>
                         <th>Status</th>
@@ -490,6 +506,8 @@ require_once __DIR__ . '/../../includes/sidebar.php';
                                     <?= cash_money($cash['amount']); ?>
                                 </td>
 
+                                <td><span class="badge bg-light text-dark border"><?= htmlspecialchars(employee_funding_source_label($cash)); ?></span><div><small class="text-muted"><?= htmlspecialchars(ucwords(str_replace('_',' ',$cash['payment_method']??'cash'))); ?></small></div></td>
+
                                 <td class="fw-semibold text-danger">
                                     <?= cash_money($cash['remaining_amount']); ?>
                                 </td>
@@ -513,15 +531,6 @@ require_once __DIR__ . '/../../includes/sidebar.php';
                                 <td>
                                     <div class="d-flex gap-2 flex-wrap">
                                         <?php if ($cash['status'] === 'active'): ?>
-                                            <form method="POST" onsubmit="return confirm('Tandai kasbon ini sebagai lunas? Kasbon tidak akan masuk potongan payroll berikutnya.');">
-                                                <input type="hidden" name="action" value="mark_paid">
-                                                <input type="hidden" name="cash_id" value="<?= (int)$cash['id']; ?>">
-                                                <input type="hidden" name="deduction_month" value="<?= htmlspecialchars($month); ?>">
-                                                <button type="submit" class="btn btn-sm btn-outline-success">
-                                                    Lunas
-                                                </button>
-                                            </form>
-
                                             <form method="POST" onsubmit="return confirm('Batalkan kasbon ini? Data tetap tersimpan sebagai arsip, tetapi tidak masuk payroll.');">
                                                 <input type="hidden" name="action" value="cancel">
                                                 <input type="hidden" name="cash_id" value="<?= (int)$cash['id']; ?>">
@@ -568,6 +577,7 @@ require_once __DIR__ . '/../../includes/sidebar.php';
     </div>
 
 </main>
+<script>document.querySelector('.funding-source')?.addEventListener('change',function(){document.querySelectorAll('.funding-choice').forEach(e=>e.classList.toggle('d-none',e.dataset.source!==this.value));});</script>
 
 <script>
     document.addEventListener('DOMContentLoaded', function() {

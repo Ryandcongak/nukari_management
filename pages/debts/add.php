@@ -8,6 +8,7 @@ $projects = $pdo->query("SELECT id, project_name FROM projects WHERE deleted_at 
 $clients = $pdo->query("SELECT id, client_name FROM clients WHERE status='active' ORDER BY client_name ASC")->fetchAll(PDO::FETCH_ASSOC);
 $suppliers = $pdo->query("SELECT id, supplier_name FROM suppliers WHERE status='active' ORDER BY supplier_name ASC")->fetchAll(PDO::FETCH_ASSOC);
 $employees = $pdo->query("SELECT id, full_name FROM employees WHERE employment_status='active' ORDER BY full_name ASC")->fetchAll(PDO::FETCH_ASSOC);
+$accounts = $pdo->query("SELECT id,account_name,current_balance FROM finance_accounts WHERE status='active' ORDER BY is_default DESC,account_name")->fetchAll(PDO::FETCH_ASSOC);
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     try {
@@ -20,6 +21,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $issue_date = $_POST['issue_date'] ?: date('Y-m-d');
         $due_date = $_POST['due_date'] ?: null;
         $amount = money_to_number($_POST['amount'] ?? 0);
+        $principalAmount = $amount;
+        $interestPercentage = max(0, (float)($_POST['interest_percentage'] ?? 0));
+        $interestAmount = money_to_number($_POST['interest_amount'] ?? 0);
+        if ($interestAmount <= 0 && $interestPercentage > 0) $interestAmount = round($principalAmount * $interestPercentage / 100, 2);
+        $amount = $principalAmount + $interestAmount;
+        $receivingAccountId = !empty($_POST['receiving_account_id']) ? (int)$_POST['receiving_account_id'] : null;
         $payment_method = $_POST['payment_method'] ?: null;
         $description = clean_input($_POST['description'] ?? '');
         $reminder_days_before = max((int)($_POST['reminder_days_before'] ?? 7), 0);
@@ -31,11 +38,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $error = 'Nominal harus lebih dari 0.';
         } else {
             $code = debt_code_generate($pdo, $type);
+            if ($type === 'debt' && !$receivingAccountId) throw new Exception('Pilih rekening tujuan penerimaan dana pinjaman.');
+            $pdo->beginTransaction();
             $stmt = $pdo->prepare("
                 INSERT INTO debts
-                (debt_code, type, related_type, related_id, related_name, project_id, category, issue_date, amount, paid_amount, due_date, payment_method, proof_file, reminder_days_before, status, description, created_by, created_at, updated_at)
+                (debt_code, type, related_type, related_id, related_name, project_id, category, issue_date, amount, principal_amount, interest_percentage, interest_amount, receiving_account_id, paid_amount, due_date, payment_method, proof_file, reminder_days_before, status, description, created_by, created_at, updated_at)
                 VALUES
-                (:debt_code, :type, :related_type, :related_id, :related_name, :project_id, :category, :issue_date, :amount, 0, :due_date, :payment_method, :proof_file, :reminder_days_before, 'unpaid', :description, :created_by, NOW(), NOW())
+                (:debt_code, :type, :related_type, :related_id, :related_name, :project_id, :category, :issue_date, :amount, :principal, :interest_percentage, :interest_amount, :receiving_account, 0, :due_date, :payment_method, :proof_file, :reminder_days_before, 'unpaid', :description, :created_by, NOW(), NOW())
             ");
             $stmt->execute([
                 ':debt_code' => $code,
@@ -47,6 +56,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 ':category' => $category ?: null,
                 ':issue_date' => $issue_date,
                 ':amount' => $amount,
+                ':principal' => $principalAmount,
+                ':interest_percentage' => $interestPercentage,
+                ':interest_amount' => $interestAmount,
+                ':receiving_account' => $receivingAccountId,
                 ':due_date' => $due_date,
                 ':payment_method' => $payment_method,
                 ':proof_file' => $proof_file,
@@ -54,9 +67,20 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 ':description' => $description ?: null,
                 ':created_by' => $_SESSION['user_id'] ?? null
             ]);
+            $debtId=(int)$pdo->lastInsertId();
+            if($type==='debt'){
+                $transactionCode=finance_generate_transaction_code($pdo,'income');
+                $pdo->prepare("INSERT INTO transactions(transaction_code,transaction_date,type,account_id,project_id,amount,description,payment_method,proof_file,source_module,source_table,source_id,reference_code,created_by,created_at,updated_at) VALUES(:code,:date,'income',:account,:project,:amount,:description,:method,:proof,'other','debts',:source,:reference,:user,NOW(),NOW())")
+                    ->execute([':code'=>$transactionCode,':date'=>$issue_date,':account'=>$receivingAccountId,':project'=>$project_id,':amount'=>$principalAmount,':description'=>'Penerimaan pinjaman dari '.$related_name,':method'=>$payment_method?:'bank_transfer',':proof'=>$proof_file,':source'=>$debtId,':reference'=>$code,':user'=>$_SESSION['user_id']??null]);
+                $fundingTx=(int)$pdo->lastInsertId();
+                $pdo->prepare("UPDATE debts SET funding_transaction_id=:tx WHERE id=:id")->execute([':tx'=>$fundingTx,':id'=>$debtId]);
+                finance_recalculate_account_balance($pdo,$receivingAccountId);
+            }
+            $pdo->commit();
             redirect('pages/debts/index.php?message=Data hutang/piutang berhasil ditambahkan');
         }
     } catch (Exception $e) {
+        if ($pdo->inTransaction()) $pdo->rollBack();
         $error = $e->getMessage();
     }
 }
@@ -114,9 +138,12 @@ require_once __DIR__ . '/../../includes/sidebar.php';
                 </select>
             </div>
             <div class="col-md-6">
-                <label class="form-label fw-semibold">Nominal</label>
+                <label class="form-label fw-semibold">Pokok Pinjaman / Tagihan</label>
                 <input type="text" name="amount" class="form-control money-input" required placeholder="Contoh: 1.500.000">
             </div>
+            <div class="col-md-4"><label class="form-label fw-semibold">Bunga (%)</label><input type="number" name="interest_percentage" step="0.001" min="0" class="form-control" value="0"></div>
+            <div class="col-md-4"><label class="form-label fw-semibold">Bunga Nominal (opsional)</label><input type="text" name="interest_amount" class="form-control money-input" placeholder="Otomatis dari persen"></div>
+            <div class="col-md-4"><label class="form-label fw-semibold">Dana Pinjaman Masuk Ke</label><select name="receiving_account_id" class="form-select"><option value="">Pilih untuk jenis Hutang</option><?php foreach($accounts as $a): ?><option value="<?= (int)$a['id']; ?>"><?= htmlspecialchars($a['account_name']); ?> · <?= rupiah($a['current_balance']); ?></option><?php endforeach; ?></select><small class="text-muted">Wajib jika pihak luar memberi pinjaman ke perusahaan.</small></div>
 
             <div class="col-md-4">
                 <label class="form-label fw-semibold">Tanggal Dibuat</label>

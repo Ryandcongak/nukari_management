@@ -1,9 +1,17 @@
 <?php
 require_once __DIR__ . '/../../includes/auth.php';
+require_once __DIR__ . '/../../includes/payroll_loan_helper.php';
+
+payroll_ensure_loan_policy_schema($pdo);
 
 function slip_money($value)
 {
     return 'Rp ' . number_format((float)$value, 0, ',', '.');
+}
+
+function slip_day_number($value): string
+{
+    return rtrim(rtrim(number_format((float)$value, 2, ',', '.'), '0'), ',');
 }
 
 function slip_minutes($minutes)
@@ -29,7 +37,11 @@ function short_date($date)
 }
 
 $id = (int)($_GET['id'] ?? 0);
-$idsParam = trim($_GET['ids'] ?? '');
+$idsInput = $_GET['ids'] ?? '';
+$ids = is_array($idsInput)
+    ? array_values(array_filter(array_map('intval', $idsInput), fn($value) => $value > 0))
+    : array_values(array_filter(array_map('intval', explode(',', trim((string)$idsInput))), fn($value) => $value > 0));
+$ids = array_values(array_unique($ids));
 $month = trim($_GET['month'] ?? '');
 $printAll = isset($_GET['all']) || isset($_GET['bulk']);
 
@@ -39,12 +51,7 @@ $params = [];
 if ($id > 0) {
     $where[] = 'p.id = :id';
     $params[':id'] = $id;
-} elseif ($idsParam !== '') {
-    $ids = array_values(array_filter(array_map('intval', explode(',', $idsParam)), fn($v) => $v > 0));
-    if (!$ids) {
-        header('Location: ' . base_url('pages/payroll/index.php'));
-        exit;
-    }
+} elseif ($ids) {
     $placeholders = [];
     foreach ($ids as $i => $payrollId) {
         $ph = ':id' . $i;
@@ -52,6 +59,10 @@ if ($id > 0) {
         $params[$ph] = $payrollId;
     }
     $where[] = 'p.id IN (' . implode(',', $placeholders) . ')';
+    if ($month !== '') {
+        $where[] = 'p.payroll_month = :selected_month';
+        $params[':selected_month'] = $month;
+    }
 } elseif ($month !== '' && $printAll) {
     $where[] = 'p.payroll_month = :month';
     $params[':month'] = $month;
@@ -82,19 +93,33 @@ $sql = "
             FROM employee_loans el
             WHERE el.employee_id = e.id
               AND el.status <> 'cancelled'
-              AND el.loan_date <= p.period_end
+              AND (el.loan_date <= p.period_end OR EXISTS (
+                  SELECT 1 FROM employee_loan_payments period_lp
+                  WHERE period_lp.loan_id = el.id
+                    AND ((period_lp.period_year * 100) + period_lp.period_month) <= CAST(REPLACE(p.payroll_month, '-', '') AS UNSIGNED)
+              ))
         ), 0) AS total_loan_amount,
         COALESCE((
             SELECT SUM(lp.payment_amount)
             FROM employee_loan_payments lp
             WHERE lp.employee_id = e.id
-              AND lp.payment_date <= p.period_end
+              AND ((lp.period_year * 100) + lp.period_month) <= CAST(REPLACE(p.payroll_month, '-', '') AS UNSIGNED)
+        ), 0) + COALESCE((
+            SELECT SUM(el.opening_paid_amount)
+            FROM employee_loans el
+            WHERE el.employee_id = e.id
+              AND el.status <> 'cancelled'
+              AND (el.loan_date <= p.period_end OR EXISTS (
+                  SELECT 1 FROM employee_loan_payments opening_lp
+                  WHERE opening_lp.loan_id = el.id
+                    AND ((opening_lp.period_year * 100) + opening_lp.period_month) <= CAST(REPLACE(p.payroll_month, '-', '') AS UNSIGNED)
+              ))
         ), 0) AS total_loan_paid_until_period,
         COALESCE((
             SELECT COUNT(*)
             FROM employee_loan_payments lp
             WHERE lp.employee_id = e.id
-              AND lp.payment_date <= p.period_end
+              AND ((lp.period_year * 100) + lp.period_month) <= CAST(REPLACE(p.payroll_month, '-', '') AS UNSIGNED)
         ), 0) AS total_loan_payment_count
     FROM payrolls p
     JOIN employees e ON p.employee_id = e.id
@@ -117,7 +142,14 @@ $pageTitle = count($payrolls) === 1
 
 $currentMonth = $month !== '' ? $month : ($payrolls[0]['payroll_month'] ?? date('Y-m'));
 $backUrl = base_url('pages/payroll/index.php' . ($currentMonth ? '?month=' . urlencode($currentMonth) : ''));
-$printAllUrl = base_url('pages/payroll/slip.php?month=' . urlencode($currentMonth) . '&all=1');
+$slipCount = count($payrolls);
+$paper = strtolower(trim((string)($_GET['paper'] ?? 'a4')));
+if (!in_array($paper, ['a4', 'f4'], true)) {
+    $paper = 'a4';
+}
+$paperLabel = strtoupper($paper);
+$paperHeight = $paper === 'f4' ? '330mm' : '297mm';
+$pageRuleSize = $paper === 'f4' ? '210mm 330mm' : 'A4 portrait';
 ?>
 <!DOCTYPE html>
 <html lang="id">
@@ -131,10 +163,15 @@ $printAllUrl = base_url('pages/payroll/slip.php?month=' . urlencode($currentMont
             box-sizing: border-box;
         }
 
+        :root {
+            --slip-paper-width: 210mm;
+            --slip-paper-height: <?= $paperHeight; ?>;
+        }
+
         body {
             margin: 0;
             padding: 18px;
-            font-family: Arial, sans-serif;
+            font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Helvetica Neue", Arial, sans-serif;
             background: #eef2f5;
             color: #111827;
         }
@@ -143,9 +180,28 @@ $printAllUrl = base_url('pages/payroll/slip.php?month=' . urlencode($currentMont
             max-width: 210mm;
             margin: 0 auto 12px;
             display: flex;
+            flex-wrap: wrap;
             gap: 8px;
             justify-content: flex-end;
             align-items: center;
+        }
+
+        .paper-picker {
+            display: inline-flex;
+            align-items: center;
+            gap: 7px;
+            margin-right: auto;
+            font-size: 13px;
+            color: #374151;
+        }
+
+        .paper-picker select {
+            border: 1px solid #cbd5e1;
+            border-radius: 8px;
+            background: #fff;
+            color: #111827;
+            padding: 8px 30px 8px 10px;
+            font: inherit;
         }
 
         .btn {
@@ -163,11 +219,6 @@ $printAllUrl = base_url('pages/payroll/slip.php?month=' . urlencode($currentMont
             color: #111827;
         }
 
-        .btn-all {
-            background: #1f2937;
-            color: #fff;
-        }
-
         .btn-print {
             background: #0f5132;
             color: #fff;
@@ -182,8 +233,9 @@ $printAllUrl = base_url('pages/payroll/slip.php?month=' . urlencode($currentMont
         }
 
         .page {
-            width: 210mm;
-            min-height: 297mm;
+            width: var(--slip-paper-width);
+            height: var(--slip-paper-height);
+            min-height: var(--slip-paper-height);
             margin: 0 auto 14px;
             padding: 10mm;
             background: #fff;
@@ -206,9 +258,13 @@ $printAllUrl = base_url('pages/payroll/slip.php?month=' . urlencode($currentMont
             height: 100%;
             overflow: hidden;
             position: relative;
+        }
+
+        .slip-card-inner {
             display: flex;
             flex-direction: column;
             gap: 5px;
+            transform-origin: top left;
         }
 
         .slip-card.empty {
@@ -386,7 +442,7 @@ $printAllUrl = base_url('pages/payroll/slip.php?month=' . urlencode($currentMont
 
         @media print {
             @page {
-                size: A4 portrait;
+                size: <?= $pageRuleSize; ?>;
                 margin: 0;
             }
 
@@ -401,9 +457,9 @@ $printAllUrl = base_url('pages/payroll/slip.php?month=' . urlencode($currentMont
             }
 
             .page {
-                width: 210mm;
-                height: 297mm;
-                min-height: 297mm;
+                width: var(--slip-paper-width);
+                height: var(--slip-paper-height);
+                min-height: var(--slip-paper-height);
                 margin: 0;
                 padding: 8mm;
                 box-shadow: none;
@@ -429,16 +485,19 @@ $printAllUrl = base_url('pages/payroll/slip.php?month=' . urlencode($currentMont
 
 <body>
     <div class="actions">
+        <label class="paper-picker" for="paperSize">
+            <span>Ukuran kertas</span>
+            <select id="paperSize" aria-label="Ukuran kertas slip gaji">
+                <option value="a4" <?= $paper === 'a4' ? 'selected' : ''; ?>>A4 (210 × 297 mm)</option>
+                <option value="f4" <?= $paper === 'f4' ? 'selected' : ''; ?>>F4 (210 × 330 mm)</option>
+            </select>
+        </label>
         <a href="<?= htmlspecialchars($backUrl); ?>" class="btn btn-back">Kembali</a>
-
-        <?php if (!$printAll): ?>
-            <a href="<?= htmlspecialchars($printAllUrl); ?>" class="btn btn-all">Cetak Semua Slip Periode Ini</a>
-        <?php endif; ?>
-
-        <button onclick="window.print()" class="btn btn-print">Cetak Slip</button>
+        <button type="button" onclick="printPayrollSlips()" class="btn btn-print">Cetak Slip</button>
     </div>
     <div class="hint">
-        Periode slip: <strong><?= htmlspecialchars($currentMonth); ?></strong>. Gunakan tombol <strong>Cetak Semua Slip Periode Ini</strong> untuk mencetak semua karyawan tanpa edit URL manual.
+        Periode slip: <strong><?= htmlspecialchars($currentMonth); ?></strong> · Kertas: <strong><?= htmlspecialchars($paperLabel); ?></strong> · Portrait · 4 slip per halaman.
+        <?= $slipCount === 1 ? 'Menampilkan 1 slip gaji.' : 'Menampilkan ' . $slipCount . ' slip gaji terpilih.'; ?>
     </div>
 
     <?php foreach (array_chunk($payrolls, 4) as $chunk): ?>
@@ -452,23 +511,32 @@ $printAllUrl = base_url('pages/payroll/slip.php?month=' . urlencode($currentMont
                 <?php
                 $p = $chunk[$i];
                 $totalBpjs = (float)field_value($p, 'bpjs_health') + (float)field_value($p, 'bpjs_employment');
-                $totalIncome = (float)field_value($p, 'base_salary') + (float)field_value($p, 'total_allowance') + (float)field_value($p, 'total_bonus') + (float)field_value($p, 'overtime_amount');
+                $additionalAmount = (float)field_value($p, 'additional_amount');
+                $additionalDetails = json_decode((string)field_value($p, 'additional_details', '[]'), true);
+                if (!is_array($additionalDetails)) $additionalDetails = [];
+                $totalIncome = (float)field_value($p, 'base_salary') + (float)field_value($p, 'total_allowance') + (float)field_value($p, 'total_bonus') + (float)field_value($p, 'overtime_amount') + $additionalAmount;
                 $loanDeduction = (float)field_value($p, 'loan_deduction');
                 $activeLoanRemaining = (float)field_value($p, 'active_loan_remaining');
-                $totalLoanAmount = (float)field_value($p, 'total_loan_amount');
-                $totalLoanPaidUntilPeriod = (float)field_value($p, 'total_loan_paid_until_period');
-                $totalLoanPaymentCount = (int)field_value($p, 'total_loan_payment_count');
-                $loanRemainingAfterDeduction = max(0, $totalLoanAmount - $totalLoanPaidUntilPeriod);
+                // Snapshot lama yang sempat tersimpan tanpa total loan dianggap
+                // tidak valid dan memakai query periode sebagai fallback.
+                $hasLoanSnapshot = (float)field_value($p, 'loan_total_snapshot') > 0;
+                if ($hasLoanSnapshot && (float)field_value($p, 'loan_remaining_snapshot') <= 0 && $activeLoanRemaining > 0) {
+                    $hasLoanSnapshot = false;
+                }
+                $totalLoanAmount = $hasLoanSnapshot ? (float)field_value($p, 'loan_total_snapshot') : (float)field_value($p, 'total_loan_amount');
+                $totalLoanPaidUntilPeriod = $hasLoanSnapshot ? (float)field_value($p, 'loan_paid_snapshot') : (float)field_value($p, 'total_loan_paid_until_period');
+                $totalLoanPaymentCount = $hasLoanSnapshot ? (int)field_value($p, 'loan_payment_count_snapshot') : (int)field_value($p, 'total_loan_payment_count');
+                $loanRemainingAfterDeduction = $hasLoanSnapshot ? (float)field_value($p, 'loan_remaining_snapshot') : max(0, $totalLoanAmount - $totalLoanPaidUntilPeriod);
                 $cashAdvance = (float)field_value($p, 'cash_advance_deduction');
                 $unpaidLeaveDeduction = (float)field_value($p, 'unpaid_leave_deduction');
                 $totalTax = (float)field_value($p, 'total_tax');
                 $manualDeduction = max(0, (float)field_value($p, 'total_deduction') - $unpaidLeaveDeduction - $cashAdvance - $loanDeduction);
                 $totalDeduction = (float)field_value($p, 'total_deduction') + $totalTax + $totalBpjs;
                 $overtimeText = slip_minutes(field_value($p, 'total_overtime_minutes'));
-                $notes = trim((string)field_value($p, 'notes', ''));
                 ?>
 
                 <div class="slip-card">
+                    <div class="slip-card-inner">
                     <div class="slip-header">
                         <div>
                             <div class="company-name">PT Nukari Kriya Raya</div>
@@ -492,12 +560,10 @@ $printAllUrl = base_url('pages/payroll/slip.php?month=' . urlencode($currentMont
 
                         <div class="box">
                             <h4>Absensi</h4>
-                            <div class="line"><span class="label">Hari Kerja</span><span class="value"><?= (int)field_value($p, 'total_work_days'); ?> hari</span></div>
-                            <div class="line"><span class="label">Hadir</span><span class="value"><?= (int)field_value($p, 'total_present_days'); ?> hari</span></div>
-                            <div class="line"><span class="label">Paid</span><span class="value"><?= (int)field_value($p, 'paid_leave_days'); ?> hari</span></div>
-                            <div class="line"><span class="label">Unpaid</span><span class="value"><?= (int)field_value($p, 'unpaid_leave_days'); ?> hari</span></div>
-                            <div class="line"><span class="label">Alpha</span><span class="value"><?= (int)field_value($p, 'total_absent_days'); ?> hari</span></div>
-                            <div class="line"><span class="label">Lembur</span><span class="value"><?= $overtimeText; ?></span></div>
+                            <div class="line"><span class="label">Hadir</span><span class="value"><?= slip_day_number(field_value($p, 'total_present_days')); ?> hari</span></div>
+                            <?php if ((float)field_value($p, 'overtime_amount') > 0): ?>
+                                <div class="line"><span class="label">Lembur</span><span class="value"><?= $overtimeText; ?></span></div>
+                            <?php endif; ?>
                         </div>
                     </div>
 
@@ -516,7 +582,7 @@ $printAllUrl = base_url('pages/payroll/slip.php?month=' . urlencode($currentMont
                                     </tr>
                                     <tr>
                                         <td>Project</td>
-                                        <td class="text-right"><?= (int)field_value($p, 'project_work_days'); ?> hr · <?= slip_money(field_value($p, 'project_worker_amount')); ?></td>
+                                        <td class="text-right"><?= slip_day_number(field_value($p, 'project_work_days')); ?> hr · <?= slip_money(field_value($p, 'project_worker_amount')); ?></td>
                                     </tr>
                                 <?php endif; ?>
                                 <tr>
@@ -527,9 +593,15 @@ $printAllUrl = base_url('pages/payroll/slip.php?month=' . urlencode($currentMont
                                     <td>Bonus</td>
                                     <td class="text-right"><?= slip_money(field_value($p, 'total_bonus')); ?></td>
                                 </tr>
+                                <?php if ((float)field_value($p, 'overtime_amount') > 0): ?>
+                                    <tr>
+                                        <td>Lembur</td>
+                                        <td class="text-right"><?= slip_money(field_value($p, 'overtime_amount')); ?></td>
+                                    </tr>
+                                <?php endif; ?>
                                 <tr>
-                                    <td>Lembur</td>
-                                    <td class="text-right"><?= slip_money(field_value($p, 'overtime_amount')); ?></td>
+                                    <td>Tambahan</td>
+                                    <td class="text-right"><?= slip_money($additionalAmount); ?></td>
                                 </tr>
                                 <tr>
                                     <td><strong>Total</strong></td>
@@ -542,43 +614,47 @@ $printAllUrl = base_url('pages/payroll/slip.php?month=' . urlencode($currentMont
                             <h4>Potongan</h4>
                             <table>
                                 <tr>
-                                    <td>Manual/Alpha</td>
-                                    <td class="text-right text-danger"><?= slip_money($manualDeduction); ?></td>
-                                </tr>
-                                <tr>
-                                    <td>Unpaid Leave</td>
-                                    <td class="text-right text-danger"><?= slip_money($unpaidLeaveDeduction); ?></td>
-                                </tr>
-                                <tr>
                                     <td>Kasbon</td>
                                     <td class="text-right text-danger"><?= slip_money($cashAdvance); ?></td>
                                 </tr>
-                                <tr>
-                                    <td>Cicilan Loan</td>
-                                    <td class="text-right text-danger"><?= slip_money($loanDeduction); ?></td>
-                                </tr>
-                                <tr>
-                                    <td>Pinjaman Awal</td>
-                                    <td class="text-right"><?= slip_money($totalLoanAmount); ?></td>
-                                </tr>
-                                <tr>
-                                    <td>Sudah Dibayar</td>
-                                    <td class="text-right text-success"><?= slip_money($totalLoanPaidUntilPeriod); ?></td>
-                                </tr>
-                                <tr>
-                                    <td>Sisa Loan</td>
-                                    <td class="text-right"><strong><?= slip_money($loanRemainingAfterDeduction); ?></strong></td>
-                                </tr>
-                                <tr>
-                                    <td>Jumlah Cicilan</td>
-                                    <td class="text-right"><?= $totalLoanPaymentCount; ?>x</td>
-                                </tr>
-                                <tr>
-                                    <td>BPJS + Pajak</td>
-                                    <td class="text-right text-danger"><?= slip_money($totalBpjs + $totalTax); ?></td>
-                                </tr>
+                                <?php if ($totalLoanAmount > 0 || $loanDeduction > 0): ?>
+                                    <tr>
+                                        <td>Cicilan Loan</td>
+                                        <td class="text-right text-danger"><?= slip_money($loanDeduction); ?></td>
+                                    </tr>
+                                    <tr>
+                                        <td>Pinjaman Awal</td>
+                                        <td class="text-right"><?= slip_money($totalLoanAmount); ?></td>
+                                    </tr>
+                                    <tr>
+                                        <td>Sudah Dibayar</td>
+                                        <td class="text-right text-success"><?= slip_money($totalLoanPaidUntilPeriod); ?></td>
+                                    </tr>
+                                    <tr>
+                                        <td>Sisa Loan</td>
+                                        <td class="text-right"><strong><?= slip_money($loanRemainingAfterDeduction); ?></strong></td>
+                                    </tr>
+                                    <tr>
+                                        <td>Jumlah Cicilan</td>
+                                        <td class="text-right"><?= $totalLoanPaymentCount; ?>x</td>
+                                    </tr>
+                                <?php endif; ?>
                             </table>
                         </div>
+                    </div>
+
+                    <div class="grid-2">
+                        <div class="box">
+                            <h4>Detail Tambahan</h4>
+                            <?php if ($additionalDetails): ?>
+                                <?php foreach ($additionalDetails as $detail): ?>
+                                    <div class="line"><span class="label"><?= htmlspecialchars($detail['addition_name'] ?? 'Tambahan'); ?></span><span class="value"><?= (int)($detail['date_count'] ?? 0); ?>x</span></div>
+                                <?php endforeach; ?>
+                            <?php else: ?>
+                                <div class="line"><span class="label">Tidak ada tambahan</span><span class="value">-</span></div>
+                            <?php endif; ?>
+                        </div>
+                        <div></div>
                     </div>
 
                     <div class="summary">
@@ -588,7 +664,7 @@ $printAllUrl = base_url('pages/payroll/slip.php?month=' . urlencode($currentMont
                     </div>
 
                     <div class="notes">
-                        Catatan: <?= $notes !== '' ? htmlspecialchars($notes) : 'Slip dibuat otomatis oleh Sistem Management PT Nukari Kriya Raya.'; ?>
+                        Catatan: Slip gaji ini dibuat sebagai bukti pembayaran gaji dan komponen penghasilan lainnya untuk periode yang tercantum.
                     </div>
 
                     <div class="signature">
@@ -609,11 +685,80 @@ $printAllUrl = base_url('pages/payroll/slip.php?month=' . urlencode($currentMont
                             <div class="sign-line"><?= htmlspecialchars($p['full_name']); ?></div>
                         </div>
                     </div>
+                    </div>
                     <div class="cut-line">Garis potong</div>
                 </div>
             <?php endfor; ?>
         </div>
     <?php endforeach; ?>
+    <script>
+        function availableCardHeight(card) {
+            const style = window.getComputedStyle(card);
+            const printableHeight = card.clientHeight
+                - parseFloat(style.paddingTop || 0)
+                - parseFloat(style.paddingBottom || 0);
+            // Sisakan ruang aman untuk pembulatan layout browser/printer dan
+            // baris tanda tangan paling bawah agar tidak menyentuh garis potong.
+            return Math.max(0, printableHeight - 12);
+        }
+
+        function fitSlipCard(card) {
+            const inner = card.querySelector('.slip-card-inner');
+            if (!inner) return;
+
+            inner.style.width = '100%';
+            inner.style.transform = 'none';
+
+            const availableHeight = availableCardHeight(card);
+            if (availableHeight <= 0 || inner.scrollHeight <= availableHeight + 1) return;
+
+            let low = 0.35;
+            let high = 1;
+            let best = low;
+
+            for (let i = 0; i < 14; i++) {
+                const scale = (low + high) / 2;
+                inner.style.width = `${100 / scale}%`;
+                const fits = inner.scrollHeight * scale <= availableHeight + 0.5;
+
+                if (fits) {
+                    best = scale;
+                    low = scale;
+                } else {
+                    high = scale;
+                }
+            }
+
+            inner.style.width = `${100 / best}%`;
+            const renderedHeight = inner.scrollHeight * best;
+            if (renderedHeight > availableHeight) {
+                best *= availableHeight / renderedHeight;
+                inner.style.width = `${100 / best}%`;
+            }
+            inner.style.transform = `scale(${best})`;
+        }
+
+        function fitAllSlipCards() {
+            document.querySelectorAll('.slip-card:not(.empty)').forEach(fitSlipCard);
+        }
+
+        function printPayrollSlips() {
+            fitAllSlipCards();
+            window.print();
+        }
+
+        document.getElementById('paperSize').addEventListener('change', function () {
+            const url = new URL(window.location.href);
+            url.searchParams.set('paper', this.value);
+            window.location.href = url.toString();
+        });
+
+        window.addEventListener('load', function () {
+            requestAnimationFrame(fitAllSlipCards);
+        });
+        window.addEventListener('resize', fitAllSlipCards);
+        window.addEventListener('beforeprint', fitAllSlipCards);
+    </script>
 </body>
 
 </html>

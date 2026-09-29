@@ -1,6 +1,7 @@
 <?php
 require_once __DIR__ . '/../../includes/auth.php';
 require_once __DIR__ . '/../../includes/finance_helper.php';
+require_once __DIR__ . '/../../includes/project_status_helper.php';
 
 
 function uploadProjectEvidenceReceipts($files, $transaction_id, $pdo)
@@ -93,6 +94,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     try {
         $accountId = (int) ($_POST['account_id'] ?? 0);
         $paymentMethod = finance_normalize_payment_method($_POST['payment_method'] ?? 'bank_transfer');
+        $receivedAmount = (float) preg_replace('/[^\d]/', '', (string)($_POST['received_amount'] ?? 0));
+        if ($receivedAmount <= 0) throw new Exception('Nominal bersih yang diterima wajib lebih dari nol.');
+        if ($receivedAmount > (float)$term['amount']) throw new Exception('Nominal bersih diterima tidak boleh melebihi nilai tagihan termin.');
+        $taxAmount = max(0, (float)$term['amount'] - $receivedAmount);
+        $taxPercentage = (float)$term['amount'] > 0 ? round($taxAmount / (float)$term['amount'] * 100, 2) : 0;
         if ($accountId <= 0) {
             throw new Exception('Pilih akun kas/bank tujuan pembayaran termin terlebih dahulu.');
         }
@@ -101,11 +107,15 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
         $update = $pdo->prepare("
             UPDATE project_payment_terms
-            SET status = 'paid'
+            SET status = 'paid', paid_date = CURDATE(), tax_percentage = :tax_percentage,
+                tax_amount = :tax_amount, received_amount = :received_amount
             WHERE id = :id
         ");
         $update->execute([
-            ':id' => $id
+            ':id' => $id,
+            ':tax_percentage' => $taxPercentage,
+            ':tax_amount' => $taxAmount,
+            ':received_amount' => $receivedAmount,
         ]);
 
         $insert = $pdo->prepare("
@@ -120,7 +130,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 person_name,
                 account_id,
                 payment_method,
-                amount
+                amount,
+                source_module,
+                source_id
             )
             VALUES
             (
@@ -133,7 +145,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 NULL,
                 :account_id,
                 :payment_method,
-                :amount
+                :amount,
+                'term',
+                :source_id
             )
         ");
 
@@ -142,7 +156,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             ':description' => 'Pembayaran ' . $term['term_name'],
             ':account_id' => $accountId,
             ':payment_method' => $paymentMethod,
-            ':amount' => $term['amount']
+            ':amount' => $receivedAmount,
+            ':source_id' => $id,
         ]);
 
         $transaction_id = (int) $pdo->lastInsertId();
@@ -164,10 +179,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         finance_mark_project_term_paid($pdo, (int) $id, date('Y-m-d'), $accountId, $paymentMethod, $firstReceiptPath, $_SESSION['user_id'] ?? null);
 
         $pdo->commit();
+        project_sync_completion_status($pdo, (int)$term['project_id']);
 
-        redirect('pages/projects/detail.php?id=' . $term['project_id']);
+        redirect('pages/projects/detail.php?id=' . $term['project_id'] . '&tab=terms');
     } catch (Exception $e) {
-        $pdo->rollBack();
+        if ($pdo->inTransaction()) $pdo->rollBack();
         $error = 'Terjadi kesalahan saat memproses pembayaran: ' . $e->getMessage();
     }
 }
@@ -270,6 +286,12 @@ require_once __DIR__ . '/../../includes/sidebar.php';
                                 <option value="qris">QRIS</option>
                                 <option value="other">Lainnya</option>
                             </select>
+                        </div>
+
+                        <div class="mb-3">
+                            <label class="form-label fw-semibold">Nominal Bersih yang Diterima</label>
+                            <input type="text" name="received_amount" class="form-control" inputmode="numeric" value="<?= number_format((float)$term['amount'],0,',','.'); ?>" required>
+                            <small class="text-muted">Sistem menghitung potongan dan persentase pajak otomatis dari selisih nilai tagihan.</small>
                         </div>
 
                         <div class="mb-3">

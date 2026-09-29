@@ -80,7 +80,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     try {
         uploadProjectGallery($_FILES['gallery_images'] ?? null, $project_id, $image_type, $caption, $pdo);
 
-        redirect('pages/projects/detail.php?id=' . $project_id . '&tab=gallery#tab-gallery');
+        redirect('pages/projects/detail.php?id=' . $project_id . '&tab=gallery');
     } catch (Exception $e) {
         $error = $e->getMessage();
     }
@@ -98,7 +98,7 @@ require_once __DIR__ . '/../../includes/sidebar.php';
             <p class="text-muted mb-0"><?= htmlspecialchars($project['project_name']); ?></p>
         </div>
 
-        <a href="<?= base_url('pages/projects/detail.php?id=' . $project_id . '&tab=gallery#tab-gallery'); ?>" class="btn btn-outline-success">
+        <a href="<?= base_url('pages/projects/detail.php?id=' . $project_id . '&tab=gallery'); ?>" class="btn btn-outline-success">
             <i class="bi bi-arrow-left me-1"></i> Kembali
         </a>
     </div>
@@ -142,7 +142,7 @@ require_once __DIR__ . '/../../includes/sidebar.php';
                             <i class="bi bi-upload me-1"></i> Upload Visual
                         </button>
 
-                        <a href="<?= base_url('pages/projects/detail.php?id=' . $project_id . '&tab=gallery#tab-gallery'); ?>" class="btn btn-light">
+                        <a href="<?= base_url('pages/projects/detail.php?id=' . $project_id . '&tab=gallery'); ?>" class="btn btn-light">
                             Batal
                         </a>
                     </div>

@@ -1,5 +1,6 @@
 <?php
 require_once __DIR__ . '/helpers.php';
+require_once __DIR__ . '/../../includes/company_party_helper.php';
 
 $pageTitle = 'Dana Operasional - Nukari';
 $userId = $_SESSION['user_id'] ?? null;
@@ -8,29 +9,15 @@ $success = '';
 
 $employees = $pdo->query("SELECT id, full_name, position FROM employees WHERE employment_status='active' ORDER BY full_name ASC")->fetchAll(PDO::FETCH_ASSOC);
 $accounts = $pdo->query("SELECT * FROM finance_accounts WHERE status='active' ORDER BY is_default DESC, account_type ASC, account_name ASC")->fetchAll(PDO::FETCH_ASSOC);
+$parties = party_active_list($pdo);
 
 try {
     if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $action = $_POST['action'] ?? '';
 
         if ($action === 'receive') {
-            $receiverType = $_POST['receiver_type'] ?? 'employee';
-            $employeeId = null;
-            $personName = '';
-            if ($receiverType === 'employee') {
-                $employeeId = (int)($_POST['employee_id'] ?? 0);
-                $stmt = $pdo->prepare("SELECT full_name FROM employees WHERE id=:id LIMIT 1");
-                $stmt->execute([':id' => $employeeId]);
-                $personName = (string)$stmt->fetchColumn();
-                if (!$employeeId || $personName === '') {
-                    throw new Exception('Pilih karyawan penerima dana operasional.');
-                }
-            } else {
-                $personName = trim($_POST['person_name'] ?? '');
-                if ($personName === '') {
-                    throw new Exception('Nama penerima dana operasional wajib diisi.');
-                }
-            }
+            $partyId = (int)($_POST['party_id'] ?? 0);
+            if (!$partyId) throw new Exception('Pilih Pihak/PIC penerima dana operasional.');
 
             $amount = f_money_to_number($_POST['amount'] ?? 0);
             $accountId = (int)($_POST['account_id'] ?? 0);
@@ -42,9 +29,10 @@ try {
             if (!$accountId) throw new Exception('Pilih akun kas/bank sumber dana perusahaan.');
 
             $pdo->beginTransaction();
-            $fund = opfund_find_open($pdo, $employeeId, $personName);
-            $fundId = $fund ? (int)$fund['id'] : opfund_create($pdo, $employeeId, $personName, $userId, 'Dibuat otomatis dari pemberian dana operasional.');
-            opfund_add_movement($pdo, $fundId, 'receive', $amount, $date, $accountId, $notes ?: 'Dana operasional diberikan kepada ' . $personName, 'finance', 'operational_funds', $fundId, null, $method, $userId);
+            $fund = opfund_find_open_by_party($pdo, $partyId);
+            $fundId = $fund ? (int)$fund['id'] : opfund_create_for_party($pdo, $partyId, $userId, 'Dibuat otomatis dari pemberian dana operasional.');
+            $partyName='';foreach($parties as $p){if((int)$p['id']===$partyId){$partyName=$p['display_name'];break;}}
+            opfund_add_movement($pdo, $fundId, 'receive', $amount, $date, $accountId, $notes ?: 'Dana operasional diberikan kepada ' . $partyName, 'finance', 'operational_funds', $fundId, null, $method, $userId);
             $pdo->commit();
             $success = 'Dana operasional berhasil dicatat.';
         }
@@ -62,7 +50,7 @@ try {
             $fund = $stmt->fetch(PDO::FETCH_ASSOC);
             if (!$fund) throw new Exception('Data dana operasional tidak ditemukan.');
             if ($amount <= 0) throw new Exception('Nominal pengembalian harus lebih dari nol.');
-            if ($amount > (float)$fund['current_balance']) throw new Exception('Nominal pengembalian tidak boleh melebihi sisa saldo personal.');
+            if ($amount > (float)$fund['current_balance']) throw new Exception('Nominal pengembalian tidak boleh melebihi sisa saldo Pihak/PIC.');
             if (!$accountId) throw new Exception('Pilih akun kas/bank tujuan pengembalian.');
 
             $pdo->beginTransaction();
@@ -100,7 +88,7 @@ require_once __DIR__ . '/../../includes/sidebar.php';
     <div class="page-header d-flex justify-content-between align-items-center flex-wrap gap-3">
         <div>
             <h1 class="fw-bold mb-1">Dana Operasional</h1>
-            <p class="text-muted mb-0">Kelola uang perusahaan yang dititipkan ke personal sebelum dipakai untuk project, payroll, bahan produk, aset, atau operasional.</p>
+            <p class="text-muted mb-0">Kelola uang perusahaan yang dititipkan kepada Pihak/PIC sebelum dipakai untuk proyek, payroll, produk, aset, atau operasional.</p>
         </div>
         <div class="d-flex gap-2 flex-wrap">
             <a href="<?= base_url('pages/finance/index.php'); ?>" class="btn btn-outline-success"><i class="bi bi-arrow-left me-1"></i> Keuangan</a>
@@ -115,9 +103,9 @@ require_once __DIR__ . '/../../includes/sidebar.php';
     <?php endif; ?>
 
     <div class="row g-3 mb-4">
-        <div class="col-xl-3 col-md-6"><div class="panel h-100"><div class="text-muted small">Dana Aktif Dipegang Personal</div><div class="fs-4 fw-bold text-success"><?= rupiah($summary['active_balance']); ?></div><small class="text-muted"><?= (int)$summary['open_count']; ?> dompet operasional open</small></div></div>
+        <div class="col-xl-3 col-md-6"><div class="panel h-100"><div class="text-muted small">Dana Aktif Dipegang Pihak/PIC</div><div class="fs-4 fw-bold text-success"><?= rupiah($summary['active_balance']); ?></div><small class="text-muted"><?= (int)$summary['open_count']; ?> dana operasional aktif</small></div></div>
         <div class="col-xl-3 col-md-6"><div class="panel h-100"><div class="text-muted small">Total Pernah Diberikan</div><div class="fs-4 fw-bold text-primary"><?= rupiah($summary['total_received']); ?></div><small class="text-muted">Bukan expense, masih uang perusahaan</small></div></div>
-        <div class="col-xl-3 col-md-6"><div class="panel h-100"><div class="text-muted small">Potensi Talangan Personal</div><div class="fs-4 fw-bold text-warning"><?= rupiah($summary['total_advance']); ?></div><small class="text-muted">Jika pemakaian melebihi dana</small></div></div>
+        <div class="col-xl-3 col-md-6"><div class="panel h-100"><div class="text-muted small">Talangan Pihak/PIC</div><div class="fs-4 fw-bold text-warning"><?= rupiah($summary['total_advance']); ?></div><small class="text-muted">Jika pemakaian melebihi dana</small></div></div>
         <div class="col-xl-3 col-md-6"><div class="panel h-100"><div class="text-muted small">Status Integrasi</div><div class="fs-5 fw-bold text-success">Global Finance</div><small class="text-muted">Siap dipakai Project, Payroll, Produk, Aset</small></div></div>
     </div>
 
@@ -125,20 +113,20 @@ require_once __DIR__ . '/../../includes/sidebar.php';
         <div class="d-flex justify-content-between align-items-start flex-wrap gap-2 mb-3">
             <div>
                 <h5 class="fw-bold mb-1">Panduan Dana Operasional</h5>
-                <div class="text-muted small">Dana operasional berbeda dengan dana talangan. Uang yang diberikan perusahaan kepada personal belum menjadi biaya sampai digunakan untuk transaksi.</div>
+                <div class="text-muted small">Dana operasional berbeda dengan dana talangan. Uang yang diberikan perusahaan kepada Pihak/PIC belum menjadi biaya sampai digunakan untuk transaksi.</div>
             </div>
             <span class="badge rounded-pill bg-success-subtle text-success">Tahap 1 - Core Engine</span>
         </div>
         <div class="row g-2 small">
             <div class="col-md-4"><div class="border rounded-4 p-3 h-100"><b>1. Berikan Dana</b><br>Kas/Bank perusahaan berkurang, tetapi belum menjadi expense.</div></div>
-            <div class="col-md-4"><div class="border rounded-4 p-3 h-100"><b>2. Dipakai Transaksi</b><br>Nanti Project/Payroll/Produk/Aset akan mengurangi saldo personal.</div></div>
+            <div class="col-md-4"><div class="border rounded-4 p-3 h-100"><b>2. Dipakai Transaksi</b><br>Proyek, Payroll, Produk, atau Aset akan mengurangi saldo Pihak/PIC.</div></div>
             <div class="col-md-4"><div class="border rounded-4 p-3 h-100"><b>3. Kembalikan Sisa</b><br>Sisa dana bisa dikembalikan ke Kas/Bank perusahaan.</div></div>
         </div>
     </div>
 
     <div class="panel mb-4">
         <div class="d-flex justify-content-between align-items-center mb-3">
-            <h5 class="fw-bold mb-0">Saldo Operasional Personal</h5>
+            <h5 class="fw-bold mb-0">Saldo Operasional Pihak/PIC</h5>
             <span class="badge rounded-pill bg-warning-subtle text-warning">Bukan Dana Talangan</span>
         </div>
         <div class="table-responsive">
@@ -151,17 +139,16 @@ require_once __DIR__ . '/../../includes/sidebar.php';
                 <?php foreach ($funds as $f): ?>
                     <tr>
                         <td><b><?= f_e($f['fund_code']); ?></b><br><small class="text-muted">#<?= (int)$f['id']; ?></small></td>
-                        <td><b><?= f_e($f['person_name']); ?></b><br><small class="text-muted"><?= $f['employee_id'] ? 'Karyawan #' . (int)$f['employee_id'] : 'Manual/Other'; ?></small></td>
+                        <td><b><?= f_e($f['person_name']); ?></b><br><small class="text-muted"><?= $f['employee_id'] ? 'Terhubung Karyawan #' . (int)$f['employee_id'] : 'Pihak/PIC Non-Karyawan'; ?></small></td>
                         <td><?= rupiah($f['total_received']); ?></td>
                         <td><?= rupiah($f['total_used']); ?></td>
                         <td><?= rupiah($f['total_returned']); ?></td>
-                        <td class="fw-bold <?= (float)$f['current_balance'] > 0 ? 'text-success' : 'text-muted'; ?>"><?= rupiah($f['current_balance']); ?></td>
+                        <td class="fw-bold <?= (float)$f['current_balance'] >= 0 ? 'text-success' : 'text-danger'; ?>"><?= rupiah($f['current_balance']); ?><br><small><?= (float)$f['current_balance'] < 0 ? 'Hutang perusahaan ke PIC' : 'Dana perusahaan di PIC'; ?></small></td>
                         <td><?= $f['status'] === 'open' ? '<span class="badge rounded-pill bg-success">Open</span>' : '<span class="badge rounded-pill bg-secondary">Closed</span>'; ?></td>
                         <td>
+                            <a class="btn btn-sm btn-outline-primary" href="<?= base_url('pages/finance/operational_fund_detail.php?id='.(int)$f['id']); ?>">Detail</a>
                             <?php if ((float)$f['current_balance'] > 0): ?>
                                 <button class="btn btn-sm btn-outline-success" data-bs-toggle="modal" data-bs-target="#returnModal" data-fund-id="<?= (int)$f['id']; ?>" data-name="<?= f_e($f['person_name']); ?>" data-balance="<?= (float)$f['current_balance']; ?>">Kembalikan</button>
-                            <?php else: ?>
-                                <span class="text-muted small">-</span>
                             <?php endif; ?>
                         </td>
                     </tr>
@@ -204,9 +191,7 @@ require_once __DIR__ . '/../../includes/sidebar.php';
                 <div class="row g-3">
                     <div class="col-md-6"><label class="form-label">Tanggal</label><input type="date" name="movement_date" class="form-control" value="<?= date('Y-m-d'); ?>" required></div>
                     <div class="col-md-6"><label class="form-label">Akun Sumber Perusahaan</label><select name="account_id" class="form-select" required><option value="">Pilih akun</option><?php foreach ($accounts as $a): ?><option value="<?= (int)$a['id']; ?>"><?= f_e($a['account_name']); ?> - <?= rupiah($a['current_balance']); ?></option><?php endforeach; ?></select></div>
-                    <div class="col-md-6"><label class="form-label">Penerima</label><select name="receiver_type" id="receiverType" class="form-select"><option value="employee">Karyawan Terdaftar</option><option value="manual">Nama Manual</option></select></div>
-                    <div class="col-md-6 receiver-employee"><label class="form-label">Karyawan</label><select name="employee_id" class="form-select"><option value="">Pilih karyawan</option><?php foreach ($employees as $e): ?><option value="<?= (int)$e['id']; ?>"><?= f_e($e['full_name']); ?><?= $e['position'] ? ' - ' . f_e($e['position']) : ''; ?></option><?php endforeach; ?></select></div>
-                    <div class="col-md-6 receiver-manual d-none"><label class="form-label">Nama Manual</label><input type="text" name="person_name" class="form-control" placeholder="Nama lengkap penerima"></div>
+                    <div class="col-md-6"><label class="form-label">Pihak/PIC Penerima</label><select name="party_id" class="form-select" required><option value="">Pilih Pihak/PIC</option><?php foreach ($parties as $party): ?><option value="<?= (int)$party['id']; ?>"><?= f_e($party['display_name']); ?><?= $party['role_labels'] ? ' · '.f_e($party['role_labels']) : ''; ?></option><?php endforeach; ?></select><div class="form-text"><a href="<?=base_url('pages/master/parties.php');?>">Tambah Pihak/PIC baru</a></div></div>
                     <div class="col-md-6"><label class="form-label">Nominal</label><input type="text" name="amount" class="form-control" required placeholder="Contoh: 5000000"></div>
                     <div class="col-md-6"><label class="form-label">Metode</label><select name="payment_method" class="form-select"><option value="bank_transfer">Bank Transfer</option><option value="cash">Cash</option><option value="qris">QRIS</option><option value="other">Lainnya</option></select></div>
                     <div class="col-12"><label class="form-label">Keterangan</label><textarea name="description" class="form-control" rows="3" placeholder="Contoh: Dana belanja material project / operasional lapangan"></textarea></div>
@@ -237,10 +222,6 @@ require_once __DIR__ . '/../../includes/sidebar.php';
 </div>
 
 <script>
-document.getElementById('receiverType')?.addEventListener('change', function(){
-    document.querySelector('.receiver-employee')?.classList.toggle('d-none', this.value !== 'employee');
-    document.querySelector('.receiver-manual')?.classList.toggle('d-none', this.value !== 'manual');
-});
 const returnModal = document.getElementById('returnModal');
 returnModal?.addEventListener('show.bs.modal', function(event){
     const btn = event.relatedTarget;

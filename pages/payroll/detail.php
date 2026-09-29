@@ -1,6 +1,9 @@
 <?php
 require_once __DIR__ . '/../../includes/auth.php';
 require_once __DIR__ . '/../../includes/payroll_workforce_helper.php';
+require_once __DIR__ . '/../../includes/payroll_additions_helper.php';
+require_once __DIR__ . '/../../includes/attendance_overtime_helper.php';
+require_once __DIR__ . '/../finance/helpers.php';
 
 $pageTitle = 'Detail Payroll - Nukari';
 
@@ -13,6 +16,11 @@ if ($id <= 0) {
 
 $error = '';
 $success = '';
+
+function detail_day_number($value): string
+{
+    return rtrim(rtrim(number_format((float)$value, 2, ',', '.'), '0'), ',');
+}
 
 $currentUserId = (int)($_SESSION['user_id'] ?? $_SESSION['id'] ?? 0);
 if ($currentUserId <= 0) {
@@ -31,11 +39,20 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') === 'unloc
         $error = 'Alasan unlock wajib diisi.';
     } else {
         try {
+            $pdo->beginTransaction();
+            finance_delete_payroll_transaction_if_exists($pdo, $id);
+            opfund_delete_movements_by_source($pdo, 'payroll', 'payrolls', $id);
+
             $unlockStmt = $pdo->prepare("
                 UPDATE payrolls
                 SET
                     status = 'draft',
                     paid_date = NULL,
+                    funding_source = 'company',
+                    operational_fund_id = NULL,
+                    payment_party_id = NULL,
+                    payment_account_id = NULL,
+                    payment_transaction_id = NULL,
                     is_locked = 0,
                     unlocked_at = NOW(),
                     unlocked_by = :unlocked_by,
@@ -52,12 +69,15 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') === 'unloc
             ]);
 
             if ($unlockStmt->rowCount() > 0) {
+                $pdo->commit();
                 header('Location: ' . base_url('pages/payroll/detail.php?id=' . $id . '&unlocked=1'));
                 exit;
             }
 
+            $pdo->rollBack();
             $error = 'Payroll ini tidak dalam kondisi locked, atau sudah dibuka sebelumnya.';
-        } catch (Exception $e) {
+        } catch (Throwable $e) {
+            if ($pdo->inTransaction()) $pdo->rollBack();
             $error = 'Gagal membuka lock payroll: ' . $e->getMessage();
         }
     }
@@ -207,8 +227,9 @@ $periodMonthNumber = (int)date('m', strtotime($periodMonthText . '-01'));
 
 $loanSummaryStmt = $pdo->prepare("
     SELECT
-        COALESCE(SUM(CASE WHEN l.status <> 'cancelled' AND l.loan_date <= :period_end THEN l.loan_amount ELSE 0 END), 0) AS total_loan_amount,
-        COUNT(CASE WHEN l.status <> 'cancelled' AND l.loan_date <= :period_end THEN 1 END) AS total_loan_count,
+        COALESCE(SUM(CASE WHEN l.status <> 'cancelled' AND l.loan_date <= :loan_period_end THEN l.loan_amount ELSE 0 END), 0) AS total_loan_amount,
+        COALESCE(SUM(CASE WHEN l.status <> 'cancelled' AND l.loan_date <= :opening_paid_period_end THEN l.opening_paid_amount ELSE 0 END), 0) AS opening_paid_amount,
+        COUNT(CASE WHEN l.status <> 'cancelled' AND l.loan_date <= :loan_count_period_end THEN 1 END) AS total_loan_count,
         COUNT(CASE WHEN l.status = 'active' THEN 1 END) AS active_loan_count,
         COALESCE(SUM(CASE WHEN l.status = 'active' THEN l.remaining_amount ELSE 0 END), 0) AS active_remaining_amount
     FROM employee_loans l
@@ -217,15 +238,17 @@ $loanSummaryStmt = $pdo->prepare("
 
 $loanSummaryStmt->execute([
     ':employee_id' => $payroll['employee_id'],
-    ':period_end' => $payroll['period_end']
+    ':loan_period_end' => $payroll['period_end'],
+    ':opening_paid_period_end' => $payroll['period_end'],
+    ':loan_count_period_end' => $payroll['period_end']
 ]);
 
 $loanSummary = $loanSummaryStmt->fetch(PDO::FETCH_ASSOC) ?: [];
 
 $loanPaymentSummaryStmt = $pdo->prepare("
     SELECT
-        COALESCE(SUM(CASE WHEN payment_date <= :period_end THEN payment_amount ELSE 0 END), 0) AS paid_until_period,
-        COUNT(CASE WHEN payment_date <= :period_end THEN 1 END) AS payment_count_until_period,
+        COALESCE(SUM(CASE WHEN payment_date <= :payment_period_end THEN payment_amount ELSE 0 END), 0) AS paid_until_period,
+        COUNT(CASE WHEN payment_date <= :payment_count_period_end THEN 1 END) AS payment_count_until_period,
         COALESCE(SUM(CASE WHEN period_month = :period_month AND period_year = :period_year THEN payment_amount ELSE 0 END), 0) AS paid_this_period
     FROM employee_loan_payments
     WHERE employee_id = :employee_id
@@ -233,7 +256,8 @@ $loanPaymentSummaryStmt = $pdo->prepare("
 
 $loanPaymentSummaryStmt->execute([
     ':employee_id' => $payroll['employee_id'],
-    ':period_end' => $payroll['period_end'],
+    ':payment_period_end' => $payroll['period_end'],
+    ':payment_count_period_end' => $payroll['period_end'],
     ':period_month' => $periodMonthNumber,
     ':period_year' => $periodYear
 ]);
@@ -264,7 +288,7 @@ $cashAdvanceDeduction = (float)($payroll['cash_advance_deduction'] ?? 0);
 $unpaidLeaveDeduction = (float)($payroll['unpaid_leave_deduction'] ?? 0);
 
 $totalLoanAmount = (float)($loanSummary['total_loan_amount'] ?? 0);
-$totalLoanPaidUntilPeriod = (float)($loanPaymentSummary['paid_until_period'] ?? 0);
+$totalLoanPaidUntilPeriod = (float)($loanSummary['opening_paid_amount'] ?? 0) + (float)($loanPaymentSummary['paid_until_period'] ?? 0);
 $totalLoanPaidThisPeriod = (float)($loanPaymentSummary['paid_this_period'] ?? 0);
 $loanPaymentCountUntilPeriod = (int)($loanPaymentSummary['payment_count_until_period'] ?? 0);
 $activeLoanCount = (int)($loanSummary['active_loan_count'] ?? 0);
@@ -273,7 +297,9 @@ $loanRemainingByPeriod = max(0, $totalLoanAmount - $totalLoanPaidUntilPeriod);
 $loanProgressPercent = $totalLoanAmount > 0 ? min(100, round(($totalLoanPaidUntilPeriod / $totalLoanAmount) * 100, 1)) : 0;
 
 $totalBpjs = (float)$payroll['bpjs_health'] + (float)$payroll['bpjs_employment'];
-$totalIncome = (float)$payroll['base_salary'] + (float)$payroll['total_allowance'] + (float)$payroll['total_bonus'] + (float)$payroll['overtime_amount'];
+$additionalDetails = json_decode((string)($payroll['additional_details'] ?? '[]'), true);
+if (!is_array($additionalDetails)) $additionalDetails = [];
+$totalIncome = (float)$payroll['base_salary'] + (float)$payroll['total_allowance'] + (float)$payroll['total_bonus'] + (float)$payroll['overtime_amount'] + (float)($payroll['additional_amount'] ?? 0);
 $totalCut = (float)$payroll['total_deduction'] + (float)$payroll['total_tax'] + $totalBpjs;
 
 require_once __DIR__ . '/../../includes/header.php';
@@ -407,7 +433,7 @@ require_once __DIR__ . '/../../includes/sidebar.php';
                     <p class="text-muted mb-0 small">Hari project memakai rate project. Hari di luar project tetap memakai rate dasar workshop.</p>
                 </div>
                 <span class="badge bg-primary-subtle text-primary rounded-pill px-3 py-2">
-                    <?= (int)($payroll['project_work_days'] ?? 0); ?> hari · <?= detail_money($payroll['project_worker_amount'] ?? 0); ?>
+                    <?= detail_day_number($payroll['project_work_days'] ?? 0); ?> hari · <?= detail_money($payroll['project_worker_amount'] ?? 0); ?>
                 </span>
             </div>
             <div class="table-responsive">
@@ -502,7 +528,7 @@ require_once __DIR__ . '/../../includes/sidebar.php';
                     </tr>
                     <tr>
                         <td class="text-muted">Hadir</td>
-                        <td><?= (int)$payroll['total_present_days']; ?> hari</td>
+                        <td><?= detail_day_number($payroll['total_present_days']); ?> hari</td>
                     </tr>
                     <tr>
                         <td class="text-muted">Alpha / Tidak Hadir</td>
@@ -571,7 +597,7 @@ require_once __DIR__ . '/../../includes/sidebar.php';
                         </tr>
                         <tr>
                             <td class="text-muted">Project</td>
-                            <td class="text-end text-primary"><?= (int)($payroll['project_work_days'] ?? 0); ?> hari · <?= detail_money($payroll['project_worker_amount'] ?? 0); ?></td>
+                            <td class="text-end text-primary"><?= detail_day_number($payroll['project_work_days'] ?? 0); ?> hari · <?= detail_money($payroll['project_worker_amount'] ?? 0); ?></td>
                         </tr>
                     <?php endif; ?>
                     <tr>
@@ -585,6 +611,10 @@ require_once __DIR__ . '/../../includes/sidebar.php';
                     <tr>
                         <td>Upah Lembur</td>
                         <td class="text-end fw-semibold"><?= detail_money($payroll['overtime_amount']); ?></td>
+                    </tr>
+                    <tr>
+                        <td>Tambahan</td>
+                        <td class="text-end fw-semibold"><?= detail_money($payroll['additional_amount'] ?? 0); ?></td>
                     </tr>
                     <tr class="fw-bold">
                         <td>Total Pendapatan</td>
@@ -645,6 +675,15 @@ require_once __DIR__ . '/../../includes/sidebar.php';
         </div>
 
     </div>
+
+    <?php if ($additionalDetails): ?>
+        <div class="panel mb-4">
+            <h5 class="fw-bold mb-3">Rincian Tambahan (Snapshot Payroll)</h5>
+            <div class="table-responsive"><table class="table table-hover align-middle"><thead><tr><th>Kategori</th><th>Nama Tambahan</th><th>Tanggal</th><th>Jumlah</th><th>Nominal</th><th>Total</th><th>Catatan</th></tr></thead><tbody>
+            <?php foreach ($additionalDetails as $detail): ?><tr><td><?= htmlspecialchars(payroll_addition_category_label($detail['category'] ?? 'other')); ?></td><td><?= htmlspecialchars($detail['addition_name'] ?? '-'); ?></td><td><?= htmlspecialchars(implode(', ', array_map(fn($date) => date('d M Y', strtotime($date)), $detail['dates'] ?? []))); ?></td><td><?= (int)($detail['date_count'] ?? 0); ?>x</td><td><?= detail_money($detail['unit_amount'] ?? 0); ?></td><td class="fw-semibold text-success"><?= detail_money($detail['total_amount'] ?? 0); ?></td><td><?= htmlspecialchars($detail['notes'] ?? '-'); ?></td></tr><?php endforeach; ?>
+            </tbody></table></div>
+        </div>
+    <?php endif; ?>
 
     <div class="panel mb-4">
         <div class="d-flex flex-wrap justify-content-between align-items-start gap-3 mb-3">
@@ -786,15 +825,14 @@ require_once __DIR__ . '/../../includes/sidebar.php';
                 <thead>
                     <tr>
                         <th>Tanggal</th>
-                        <th>Pagi Masuk</th>
-                        <th>Pagi Keluar</th>
-                        <th>Siang Masuk</th>
-                        <th>Siang Keluar</th>
-                        <th>Lembur Masuk</th>
-                        <th>Lembur Keluar</th>
+                        <th>Datang</th>
+                        <th>Pulang</th>
                         <th>Terlambat</th>
                         <th>Pulang Awal</th>
-                        <th>Total Kerja</th>
+                        <th>Jam Kerja</th>
+                        <th>Jam Lembur</th>
+                        <th>Nilai Lembur</th>
+                        <th>Nilai Hari</th>
                         <th>Status</th>
                     </tr>
                 </thead>
@@ -802,19 +840,21 @@ require_once __DIR__ . '/../../includes/sidebar.php';
                 <tbody>
                     <?php if ($attendances): ?>
                         <?php foreach ($attendances as $attendance): ?>
+                            <?php $dayClass = attendance_day_classification($attendance['check_in'] ?? null, $attendance['check_out'] ?? null, $attendance['status'] ?? null); ?>
                             <tr>
                                 <td><?= date('d M Y', strtotime($attendance['attendance_date'])); ?></td>
-                                <td><?= detail_time($attendance['morning_in']); ?></td>
-                                <td><?= detail_time($attendance['morning_out']); ?></td>
-                                <td><?= detail_time($attendance['afternoon_in']); ?></td>
-                                <td><?= detail_time($attendance['afternoon_out']); ?></td>
-                                <td><?= detail_time($attendance['overtime_in']); ?></td>
-                                <td><?= detail_time($attendance['overtime_out']); ?></td>
+                                <td><?= detail_time($attendance['check_in']); ?></td>
+                                <td><?= detail_time($attendance['check_out']); ?></td>
                                 <td><?= detail_minutes($attendance['late_minutes']); ?></td>
                                 <td><?= detail_minutes($attendance['early_leave_minutes']); ?></td>
                                 <td><?= detail_minutes($attendance['work_minutes']); ?></td>
+                                <td><?= detail_minutes($attendance['overtime_minutes'] ?? 0); ?></td>
+                                <td><?= detail_money($attendance['overtime_amount'] ?? 0); ?><div class="small text-muted"><?= ($attendance['overtime_method'] ?? 'hourly') === 'fixed' ? 'Borongan' : 'Per jam'; ?></div></td>
+                                <td><strong><?= detail_day_number($attendance['attendance_day_value'] ?? 0); ?> hari</strong><div class="small <?= !empty($dayClass['needs_review']) ? 'text-danger fw-semibold' : 'text-muted'; ?>"><?= htmlspecialchars($dayClass['label']); ?></div></td>
                                 <td>
-                                    <?php if ($attendance['status'] === 'late'): ?>
+                                    <?php if (!empty($dayClass['needs_review'])): ?>
+                                        <span class="badge rounded-pill badge-soft-red">Perlu Diperiksa</span>
+                                    <?php elseif ($attendance['status'] === 'late'): ?>
                                         <span class="badge rounded-pill badge-soft-orange">Terlambat</span>
                                     <?php elseif ($attendance['status'] === 'absent'): ?>
                                         <span class="badge rounded-pill badge-soft-red">Alpha</span>
@@ -830,7 +870,7 @@ require_once __DIR__ . '/../../includes/sidebar.php';
                         <?php endforeach; ?>
                     <?php else: ?>
                         <tr>
-                            <td colspan="11" class="text-center text-muted py-4">
+                            <td colspan="10" class="text-center text-muted py-4">
                                 Tidak ada data absensi pada periode payroll ini.
                             </td>
                         </tr>

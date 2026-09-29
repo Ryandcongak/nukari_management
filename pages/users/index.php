@@ -111,11 +111,10 @@ require_once __DIR__ . '/../../includes/sidebar.php';
                                     <?php if ($user['id'] != $_SESSION['user_id']): ?>
 
                                         <?php if ($user['status'] !== 'inactive'): ?>
-                                            <a href="<?= base_url('pages/users/deactivate.php?id=' . $user['id']); ?>"
-                                                onclick="return confirm('Yakin ingin menonaktifkan user ini?')"
-                                                class="btn btn-sm btn-outline-warning">
-                                                <i class="bi bi-person-x me-1"></i> Nonaktifkan
-                                            </a>
+                                            <form method="POST" action="<?= base_url('pages/users/deactivate.php?id=' . $user['id']); ?>" class="d-inline" onsubmit="return confirm('Yakin ingin menonaktifkan user ini?')">
+                                                <?= csrf_field(); ?>
+                                                <button class="btn btn-sm btn-outline-warning"><i class="bi bi-person-x me-1"></i> Nonaktifkan</button>
+                                            </form>
                                         <?php endif; ?>
 
                                         <a href="<?= base_url('pages/users/delete.php?id=' . $user['id']); ?>"

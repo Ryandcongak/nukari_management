@@ -23,8 +23,14 @@ if ($category !== '') {
     $params[':category'] = $category;
 }
 if ($keyword !== '') {
-    $where[] = '(a.asset_code LIKE :keyword OR a.asset_name LIKE :keyword OR a.category LIKE :keyword OR a.location LIKE :keyword OR e.full_name LIKE :keyword OR p.project_name LIKE :keyword)';
-    $params[':keyword'] = '%' . $keyword . '%';
+    $where[] = '(a.asset_code LIKE :keyword_code OR a.asset_name LIKE :keyword_name OR a.category LIKE :keyword_category OR a.location LIKE :keyword_location OR e.full_name LIKE :keyword_employee OR p.project_name LIKE :keyword_project)';
+    $keywordValue = '%' . $keyword . '%';
+    $params[':keyword_code'] = $keywordValue;
+    $params[':keyword_name'] = $keywordValue;
+    $params[':keyword_category'] = $keywordValue;
+    $params[':keyword_location'] = $keywordValue;
+    $params[':keyword_employee'] = $keywordValue;
+    $params[':keyword_project'] = $keywordValue;
 }
 
 $whereSql = $where ? 'WHERE ' . implode(' AND ', $where) : '';

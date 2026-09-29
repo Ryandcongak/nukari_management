@@ -27,6 +27,16 @@ function pct($value)
     return number_format((float) $value, 1, ',', '.') . '%';
 }
 
+function project_day_number($value)
+{
+    $value = (float) $value;
+    if (floor($value) == $value) {
+        return number_format($value, 0, ',', '.');
+    }
+
+    return rtrim(rtrim(number_format($value, 2, ',', '.'), '0'), ',');
+}
+
 function billing_label($cycle)
 {
     $map = [
@@ -143,10 +153,11 @@ function project_worker_attendance_summary(PDO $pdo, $employeeId, $startDate, $e
 
     $stmt = $pdo->prepare("
         SELECT
-            COUNT(*) AS attendance_days,
+            COALESCE(SUM(attendance_day_value), 0) AS attendance_days,
             COALESCE(SUM(work_minutes), 0) AS total_work_minutes,
             COALESCE(SUM(
                 CASE
+                    WHEN COALESCE(overtime_minutes, 0) > 0 THEN overtime_minutes
                     WHEN overtime_in IS NOT NULL AND overtime_out IS NOT NULL AND overtime_out > overtime_in
                     THEN TIMESTAMPDIFF(MINUTE, CONCAT(attendance_date, ' ', overtime_in), CONCAT(attendance_date, ' ', overtime_out))
                     ELSE 0
@@ -155,7 +166,7 @@ function project_worker_attendance_summary(PDO $pdo, $employeeId, $startDate, $e
         FROM attendances
         WHERE employee_id = :employee_id
           AND attendance_date BETWEEN :start_date AND :end_date
-          AND status IN ('present','late')
+          AND attendance_day_value > 0
     ");
     $stmt->execute([
         ':employee_id' => (int) $employeeId,
@@ -165,7 +176,7 @@ function project_worker_attendance_summary(PDO $pdo, $employeeId, $startDate, $e
 
     $row = $stmt->fetch(PDO::FETCH_ASSOC) ?: [];
     return [
-        'attendance_days' => (int) ($row['attendance_days'] ?? 0),
+        'attendance_days' => (float) ($row['attendance_days'] ?? 0),
         'total_work_minutes' => (int) ($row['total_work_minutes'] ?? 0),
         'overtime_minutes' => (int) ($row['overtime_minutes'] ?? 0),
     ];
@@ -173,7 +184,7 @@ function project_worker_attendance_summary(PDO $pdo, $employeeId, $startDate, $e
 
 function project_worker_total($baseDays, $rate, $overtimeHours, $overtimeRate, $bonusAmount, $deductionAmount, $isBorongan = false)
 {
-    $baseAmount = $isBorongan ? (float) $rate : ((int) $baseDays * (float) $rate);
+    $baseAmount = $isBorongan ? (float) $rate : ((float) $baseDays * (float) $rate);
     $overtimeAmount = (float) $overtimeHours * (float) $overtimeRate;
     return max(0, $baseAmount + $overtimeAmount + (float) $bonusAmount - (float) $deductionAmount);
 }
@@ -181,7 +192,7 @@ function project_worker_total($baseDays, $rate, $overtimeHours, $overtimeRate, $
 function is_auto_project_transaction(array $trx)
 {
     $source = $trx['source_module'] ?? 'manual';
-    if (in_array($source, ['term', 'fund', 'worker'], true)) {
+    if (in_array($source, ['term', 'fund', 'worker', 'asset_sale', 'asset_rental', 'asset_maintenance'], true)) {
         return true;
     }
 
@@ -206,6 +217,9 @@ function project_transaction_source_label(array $trx)
     if ($source === 'worker' || ($trx['category'] ?? '') === 'Biaya Pekerja') {
         return 'Otomatis dari Pekerja';
     }
+    if ($source === 'asset_sale') return 'Otomatis dari Penjualan Aset';
+    if ($source === 'asset_rental') return 'Otomatis dari Sewa Aset';
+    if ($source === 'asset_maintenance') return 'Otomatis dari Maintenance Aset';
     return 'Manual';
 }
 
@@ -328,14 +342,7 @@ function upload_project_transaction_receipts($files, $transactionId, PDO $pdo)
 
 function ensure_project_fund_receipts_table(PDO $pdo)
 {
-    if (project_table_exists($pdo, 'project_fund_receipts')) {
-        return;
-    }
-    try {
-        $pdo->exec("\n            CREATE TABLE IF NOT EXISTS project_fund_receipts (\n                id INT(11) NOT NULL AUTO_INCREMENT,\n                fund_id INT(11) NOT NULL,\n                file_path VARCHAR(255) NOT NULL,\n                caption VARCHAR(255) NULL,\n                created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,\n                PRIMARY KEY (id),\n                KEY idx_project_fund_receipts_fund_id (fund_id)\n            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci\n        ");
-    } catch (Throwable $e) {
-        // Jangan hentikan halaman project jika migration belum bisa dibuat otomatis.
-    }
+    return project_table_exists($pdo, 'project_fund_receipts');
 }
 
 function upload_project_fund_receipts($files, $fundId, PDO $pdo)
@@ -475,7 +482,7 @@ function project_table_exists(PDO $pdo, $tableName)
         return $cache[$tableName];
     }
     try {
-        $stmt = $pdo->prepare("SHOW TABLES LIKE :table_name");
+        $stmt = $pdo->prepare("SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = DATABASE() AND table_name = :table_name");
         $stmt->execute([':table_name' => $tableName]);
         $cache[$tableName] = (bool) $stmt->fetchColumn();
     } catch (Throwable $e) {
@@ -723,8 +730,8 @@ function delete_project_evidence_file(PDO $pdo, $projectId, $evidenceType, $evid
         $delete = $pdo->prepare("DELETE FROM project_worker_receipts WHERE id = :id");
         $delete->execute([':id' => $evidenceId]);
     } elseif ($evidenceType === 'asset_photo' && project_table_exists($pdo, 'project_asset_photos')) {
-        $stmt = $pdo->prepare("\n            SELECT p.image_path\n            FROM project_asset_photos p\n            INNER JOIN assets a ON a.id = p.asset_id\n            LEFT JOIN project_transactions t ON t.id = a.source_transaction_id\n            WHERE p.id = :id AND (a.source_project_id = :project_id OR t.project_id = :project_id)\n            LIMIT 1\n        ");
-        $stmt->execute([':id' => $evidenceId, ':project_id' => $projectId]);
+        $stmt = $pdo->prepare("\n            SELECT p.image_path\n            FROM project_asset_photos p\n            INNER JOIN assets a ON a.id = p.asset_id\n            LEFT JOIN project_transactions t ON t.id = a.source_transaction_id\n            WHERE p.id = :id AND (a.source_project_id = :asset_project_id OR t.project_id = :transaction_project_id)\n            LIMIT 1\n        ");
+        $stmt->execute([':id' => $evidenceId, ':asset_project_id' => $projectId, ':transaction_project_id' => $projectId]);
         $filePath = $stmt->fetchColumn();
         if (!$filePath) {
             throw new Exception('Foto aset tidak ditemukan.');
@@ -754,7 +761,8 @@ function ensure_term_transaction(PDO $pdo, $projectId, $termId, array $termData,
     $current = $stmt->fetch(PDO::FETCH_ASSOC);
 
     $description = 'Pembayaran ' . (trim((string) ($termData['term_name'] ?? 'Termin')) ?: 'Termin');
-    $amount = (float) ($termData['amount'] ?? 0);
+    $amount = (float) ($termData['received_amount'] ?? 0);
+    if ($amount <= 0) $amount = (float) ($termData['amount'] ?? 0);
 
     if (!empty($current['transaction_id'])) {
         $trxId = (int) $current['transaction_id'];
@@ -1130,10 +1138,11 @@ function save_project_gallery_link($url, $projectId, $docType, $caption, PDO $pd
 
 
 $allowedTabs = ['overview', 'terms', 'funds', 'transactions', 'workers', 'gallery'];
-$activeTab = $_GET['tab'] ?? 'overview';
+$activeTab = $_GET['tab'] ?? ($_SESSION['project_active_tab'] ?? 'overview');
 if (!in_array($activeTab, $allowedTabs, true)) {
     $activeTab = 'overview';
 }
+$_SESSION['project_active_tab'] = $activeTab;
 
 ensure_project_transaction_date_column($pdo);
 
@@ -1313,6 +1322,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $paymentMethod = function_exists('finance_normalize_payment_method')
                 ? finance_normalize_payment_method($_POST['payment_method'] ?? 'bank_transfer')
                 : (in_array(($_POST['payment_method'] ?? 'bank_transfer'), ['cash', 'bank_transfer', 'qris', 'other'], true) ? ($_POST['payment_method'] ?? 'bank_transfer') : 'other');
+            $receivedAmountInput = post_amount('received_amount');
 
             if ($accountId <= 0) {
                 $_SESSION['error'] = 'Pilih akun kas/bank tujuan pembayaran termin terlebih dahulu.';
@@ -1331,12 +1341,20 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $termForPayment = $stmt->fetch(PDO::FETCH_ASSOC);
 
             if ($termForPayment) {
+                $grossAmount = (float)$termForPayment['amount'];
+                if ($receivedAmountInput <= 0) throw new Exception('Nominal bersih yang diterima wajib lebih dari nol.');
+                if ($receivedAmountInput > $grossAmount) throw new Exception('Nominal bersih diterima tidak boleh melebihi nilai tagihan termin.');
+                $receivedAmount = $receivedAmountInput;
+                $taxAmount = max(0, $grossAmount - $receivedAmount);
+                $taxPercentage = $grossAmount > 0 ? round($taxAmount / $grossAmount * 100, 2) : 0;
+                $termForPayment['received_amount'] = $receivedAmount;
                 $stmt = $pdo->prepare("
                     UPDATE project_payment_terms
-                    SET status = 'paid', paid_date = CURDATE(), updated_at = NOW()
+                    SET status = 'paid', paid_date = CURDATE(), tax_percentage = :tax_percentage,
+                        tax_amount = :tax_amount, received_amount = :received_amount, updated_at = NOW()
                     WHERE id = :term_id AND project_id = :project_id
                 ");
-                $stmt->execute([':term_id' => $termId, ':project_id' => $id]);
+                $stmt->execute([':term_id' => $termId, ':project_id' => $id, ':tax_percentage' => $taxPercentage, ':tax_amount' => $taxAmount, ':received_amount' => $receivedAmount]);
 
                 $transactionId = ensure_term_transaction($pdo, $id, $termId, $termForPayment, $accountId, $paymentMethod);
                 $uploadedReceipts = upload_project_transaction_receipts($_FILES['receipt_images'] ?? null, $transactionId, $pdo);
@@ -1527,7 +1545,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $paymentType = clean_input($_POST['payment_type'] ?? 'daily');
             $startDate = $_POST['start_date'] ?? null;
             $endDate = $_POST['end_date'] ?? null;
-            $workDays = max(1, (int) ($_POST['work_days'] ?? 1));
+            $postedWorkDays = (float) str_replace(',', '.', (string) ($_POST['work_days'] ?? 1));
+            $workDays = max(0.5, round($postedWorkDays * 2) / 2);
             $rate = post_amount('rate');
             $overtimeHours = (float) str_replace(',', '.', (string) ($_POST['overtime_hours'] ?? 0));
             $overtimeRate = post_amount('overtime_rate');
@@ -1588,7 +1607,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     redirect_detail($id, 'workers');
                 }
                 $attendanceSummary = project_worker_attendance_summary($pdo, $employeeId, $startDate, $endDate);
-                $workDays = (int) $attendanceSummary['attendance_days'];
+                $workDays = (float) $attendanceSummary['attendance_days'];
                 if ($workDays <= 0) {
                     $_SESSION['error'] = 'Belum ada data kehadiran fingerprint untuk karyawan internal pada rentang tanggal tersebut.';
                     redirect_detail($id, 'workers');
@@ -1928,6 +1947,28 @@ $transactionEvidence = fetch_project_evidence_grouped($pdo, 'project_transaction
 $workerEvidence = fetch_project_evidence_grouped($pdo, 'project_worker_receipts', 'worker_id', array_column($workers, 'id'));
 
 $transactionAssetEvidence = [];
+$transactionAssetInfo = [];
+if (!empty($transactions) && project_table_exists($pdo, 'assets')) {
+    $assetInfoStmt = $pdo->prepare("
+        SELECT pt.id transaction_id,
+               COALESCE(purchase_asset.id, sale_asset.id, rental_asset.id, maintenance_asset.id) asset_id,
+               COALESCE(purchase_asset.asset_code, sale_asset.asset_code, rental_asset.asset_code, maintenance_asset.asset_code) asset_code,
+               COALESCE(purchase_asset.asset_name, sale_asset.asset_name, rental_asset.asset_name, maintenance_asset.asset_name) asset_name
+        FROM project_transactions pt
+        LEFT JOIN assets purchase_asset ON pt.is_asset=1 AND purchase_asset.source_transaction_id=pt.id
+        LEFT JOIN asset_sales sale ON pt.source_module='asset_sale' AND sale.id=pt.source_id
+        LEFT JOIN assets sale_asset ON sale_asset.id=sale.asset_id
+        LEFT JOIN asset_rental_payments rental_payment ON pt.source_module='asset_rental' AND rental_payment.id=pt.source_id
+        LEFT JOIN assets rental_asset ON rental_asset.id=rental_payment.asset_id
+        LEFT JOIN asset_maintenance maintenance ON pt.source_module='asset_maintenance' AND maintenance.id=pt.source_id
+        LEFT JOIN assets maintenance_asset ON maintenance_asset.id=maintenance.asset_id
+        WHERE pt.project_id=:project_id
+    ");
+    $assetInfoStmt->execute([':project_id'=>$id]);
+    foreach ($assetInfoStmt->fetchAll(PDO::FETCH_ASSOC) as $assetInfo) {
+        if (!empty($assetInfo['asset_id'])) $transactionAssetInfo[(int)$assetInfo['transaction_id']] = $assetInfo;
+    }
+}
 if (!empty($transactions) && project_table_exists($pdo, 'project_asset_photos') && project_table_exists($pdo, 'assets')) {
     $transactionIdsForAssets = array_values(array_unique(array_filter(array_map(
         static fn($trx) => (int) ($trx['id'] ?? 0),
@@ -1985,16 +2026,21 @@ $employees = $employeesStmt->fetchAll(PDO::FETCH_ASSOC);
 
 $totalTerms = 0;
 $totalPaidTerms = 0;
+$totalTermTax = 0;
+$totalPaidNet = 0;
 $overdueTerms = 0;
 foreach ($terms as $term) {
     $totalTerms += (float) $term['amount'];
     if ($term['status'] === 'paid') {
         $totalPaidTerms += (float) $term['amount'];
+        $totalTermTax += (float)($term['tax_amount'] ?? 0);
+        $totalPaidNet += (float)($term['received_amount'] ?? 0) > 0 ? (float)$term['received_amount'] : max(0, (float)$term['amount'] - (float)($term['tax_amount'] ?? 0));
     }
     if ($term['status'] !== 'paid' && strtotime($term['due_date']) < strtotime(date('Y-m-d'))) {
         $overdueTerms++;
     }
 }
+$effectiveTermTaxRate = $totalPaidTerms > 0 ? ($totalTermTax / $totalPaidTerms) * 100 : 0;
 
 $paidWorkerIdsForFunding = [];
 foreach ($workers as $w) {
@@ -2069,6 +2115,8 @@ $totalClientIncome = 0;
 $totalExpense = 0;
 $totalWorkerCost = 0;
 $totalAssetExpense = 0;
+$assetPurchaseTotal = $assetSaleTotal = $assetRentalTotal = $assetMaintenanceTotal = 0;
+$projectAssetIds = [];
 foreach ($transactions as $trx) {
     if ($trx['transaction_type'] === 'income' && $trx['category'] !== 'Modal Project') {
         $totalClientIncome += (float) $trx['amount'];
@@ -2081,7 +2129,12 @@ foreach ($transactions as $trx) {
     }
     if ((int) $trx['is_asset'] === 1) {
         $totalAssetExpense += (float) $trx['amount'];
+        $assetPurchaseTotal += (float) $trx['amount'];
     }
+    if (($trx['source_module'] ?? '') === 'asset_sale') $assetSaleTotal += (float)$trx['amount'];
+    if (($trx['source_module'] ?? '') === 'asset_rental') $assetRentalTotal += (float)$trx['amount'];
+    if (($trx['source_module'] ?? '') === 'asset_maintenance') $assetMaintenanceTotal += (float)$trx['amount'];
+    if (!empty($transactionAssetInfo[(int)$trx['id']]['asset_id'])) $projectAssetIds[(int)$transactionAssetInfo[(int)$trx['id']]['asset_id']] = true;
 }
 
 $contractValue = (float) $project['contract_value'];
@@ -2149,12 +2202,6 @@ require_once __DIR__ . '/../../includes/sidebar.php';
         padding: 8px 13px;
         font-size: 13px;
         backdrop-filter: blur(10px);
-    }
-    .guide-card {
-        border: 0;
-        border-radius: 22px;
-        background: #f8fbff;
-        box-shadow: 0 16px 40px rgba(15, 23, 42, .06);
     }
     .metric-card {
         border: 0;
@@ -2328,6 +2375,7 @@ require_once __DIR__ . '/../../includes/sidebar.php';
                     <span class="badge bg-light text-success rounded-pill px-3 py-2 mb-2"><?= e($status['label']); ?></span>
                     <div class="fw-bold fs-4"><?= rp($contractValue); ?></div>
                     <div class="opacity-75 small">Nilai Kontrak</div>
+                    <a href="<?= base_url('pages/projects/report.php?id=' . $id); ?>" target="_blank" class="btn btn-sm btn-light mt-2"><i class="bi bi-printer me-1"></i>Laporan Project</a>
                 </div>
             </div>
 
@@ -2362,54 +2410,49 @@ require_once __DIR__ . '/../../includes/sidebar.php';
         </div>
     <?php endif; ?>
 
-    <div class="card guide-card mb-4">
-        <div class="card-body p-4">
-            <div class="d-flex gap-3 align-items-start">
-                <div class="rounded-circle bg-success text-white d-flex align-items-center justify-content-center" style="width:44px;height:44px;min-width:44px;">
-                    <i class="bi bi-lightbulb"></i>
-                </div>
-                <div>
-                    <h5 class="fw-bold mb-1">Panduan halaman Detail Project</h5>
-                    <p class="text-muted mb-2">Gunakan halaman ini sebagai pusat kontrol project. Untuk <b>One Time Project</b>, termin biasanya mengikuti progress pekerjaan. Untuk <b>Contract Project</b>, termin biasanya mengikuti periode kontrak seperti bulanan, triwulan, atau custom.</p>
-                    <div class="d-flex flex-wrap gap-2">
-                        <span class="badge text-bg-light rounded-pill px-3 py-2">1. Pastikan tipe project benar</span>
-                        <span class="badge text-bg-light rounded-pill px-3 py-2">2. Input termin/tagihan</span>
-                        <span class="badge text-bg-light rounded-pill px-3 py-2">3. Catat pendanaan & biaya</span>
-                        <span class="badge text-bg-light rounded-pill px-3 py-2">4. Tambahkan pekerja</span>
-                        <span class="badge text-bg-light rounded-pill px-3 py-2">5. Pantau profit & cash flow</span>
-                    </div>
-                </div>
+    <div class="modern-panel p-3 p-lg-4 mb-4" style="border-left:5px solid #f59f00;">
+        <div class="d-flex justify-content-between align-items-center flex-wrap gap-2 mb-3">
+            <div>
+                <h5 class="fw-bold mb-1"><i class="bi bi-receipt-cutoff text-warning me-2"></i>Ringkasan Potongan Pajak Termin</h5>
+                <div class="small text-muted">Selisih dihitung otomatis dari nilai tagihan dikurangi nominal bersih yang diterima.</div>
             </div>
+            <a href="<?= base_url('pages/projects/detail.php?id='.$id.'&tab=terms'); ?>" class="btn btn-sm btn-outline-warning rounded-pill">Lihat Rincian Termin</a>
+        </div>
+        <div class="row g-3">
+            <div class="col-md-6 col-xl-3"><div class="mini-total-card"><span>Tagihan Sudah Dibayar</span><strong><?= rp($totalPaidTerms); ?></strong><small class="text-muted">Nilai sebelum pajak</small></div></div>
+            <div class="col-md-6 col-xl-3"><div class="mini-total-card"><span>Selisih Dipotong Client</span><strong class="text-danger">- <?= rp($totalTermTax); ?></strong><small class="text-muted">Potongan pajak otomatis</small></div></div>
+            <div class="col-md-6 col-xl-3"><div class="mini-total-card"><span>Dana Bersih Termin</span><strong class="text-success"><?= rp($totalPaidNet); ?></strong><small class="text-muted">Benar-benar diterima</small></div></div>
+            <div class="col-md-6 col-xl-3"><div class="mini-total-card"><span>Persentase Potongan</span><strong><?= pct($effectiveTermTaxRate); ?></strong><small class="text-muted">Dari termin yang sudah dibayar</small></div></div>
         </div>
     </div>
 
     <div class="row g-3 mb-4">
         <div class="col-md-6 col-xl-3">
             <div class="metric-card" style="border-left-color:#198754;">
-                <div class="metric-label">Pendapatan Client</div>
+                <div class="metric-label">Total Pemasukan Project</div>
                 <div class="metric-value"><?= rp($totalClientIncome); ?></div>
-                <div class="metric-sub">Termin dibayar: <?= rp($totalPaidTerms); ?></div>
+                <div class="metric-sub">Dana bersih termin: <?= rp($totalPaidNet); ?></div>
             </div>
         </div>
         <div class="col-md-6 col-xl-3">
             <div class="metric-card" style="border-left-color:#0d6efd;">
-                <div class="metric-label">Total Pendanaan</div>
+                <div class="metric-label">Dana yang Digunakan</div>
                 <div class="metric-value"><?= rp($totalAllFund); ?></div>
                 <div class="metric-sub">Perusahaan <?= rp($totalCompanyFund); ?> · Personal <?= rp($totalPersonFund); ?></div>
             </div>
         </div>
         <div class="col-md-6 col-xl-3">
             <div class="metric-card" style="border-left-color:#f59f00;">
-                <div class="metric-label">Total Pengeluaran</div>
+                <div class="metric-label">Total Biaya Project</div>
                 <div class="metric-value"><?= rp($totalExpense); ?></div>
                 <div class="metric-sub">Pekerja <?= rp($totalWorkerCost); ?> · Aset <?= rp($totalAssetExpense); ?></div>
             </div>
         </div>
         <div class="col-md-6 col-xl-3">
             <div class="metric-card" style="border-left-color:<?= $cashPosition >= 0 ? '#20c997' : '#dc3545'; ?>;">
-                <div class="metric-label">Cash Position</div>
+                <div class="metric-label">Saldo Project Saat Ini</div>
                 <div class="metric-value"><?= rp($cashPosition); ?></div>
-                <div class="metric-sub">Estimasi profit kontrak: <?= rp($projectedProfit); ?></div>
+                <div class="metric-sub">Perkiraan keuntungan: <?= rp($projectedProfit); ?></div>
             </div>
         </div>
     </div>
@@ -2435,7 +2478,7 @@ require_once __DIR__ . '/../../includes/sidebar.php';
 
                 <div class="mb-4">
                     <div class="d-flex justify-content-between mb-2">
-                        <span class="fw-semibold">Collection Progress</span>
+                        <span class="fw-semibold">Persentase Pembayaran Client</span>
                         <span class="fw-bold"><?= pct($collectionProgress); ?></span>
                     </div>
                     <div class="progress rounded-pill" style="height:12px;">
@@ -2446,7 +2489,7 @@ require_once __DIR__ . '/../../includes/sidebar.php';
 
                 <div class="mb-4">
                     <div class="d-flex justify-content-between mb-2">
-                        <span class="fw-semibold">Expense Ratio</span>
+                        <span class="fw-semibold">Persentase Biaya terhadap Kontrak</span>
                         <span class="fw-bold"><?= pct($expenseProgress); ?></span>
                     </div>
                     <div class="progress rounded-pill" style="height:12px;">
@@ -2457,7 +2500,7 @@ require_once __DIR__ . '/../../includes/sidebar.php';
 
                 <div class="mini-card">
                     <div class="d-flex justify-content-between">
-                        <span class="text-muted">Termin Overdue</span>
+                        <span class="text-muted">Tagihan Terlambat Dibayar</span>
                         <strong class="<?= $overdueTerms > 0 ? 'text-danger' : 'text-success'; ?>"><?= $overdueTerms; ?></strong>
                     </div>
                     <hr>
@@ -2482,16 +2525,21 @@ require_once __DIR__ . '/../../includes/sidebar.php';
 
         <div class="pt-4">
             <?php if ($activeTab === 'overview'): ?>
-                <div class="alert alert-success-subtle border-0 rounded-4 mb-3">
-                    <div class="fw-bold mb-1"><i class="bi bi-info-circle me-1"></i> Panduan Overview</div>
-                    <div class="small text-muted">Overview menampilkan identitas project, tipe project, kontrak, ringkasan keuangan, dan aktivitas terbaru. Gunakan bagian ini untuk melihat apakah project sudah sehat secara cash flow dan profit.</div>
+                <div class="row g-3 mb-4">
+                    <div class="col-md-6 col-xl-3"><div class="mini-total-card"><span>Tagihan Sudah Dibayar</span><strong><?= rp($totalPaidTerms); ?></strong></div></div>
+                    <div class="col-md-6 col-xl-3"><div class="mini-total-card"><span>Sisa Tagihan Client</span><strong><?= rp(max(0, $totalTerms - $totalPaidTerms)); ?></strong></div></div>
+                    <div class="col-md-6 col-xl-3"><div class="mini-total-card"><span>Total Biaya Project</span><strong><?= rp($totalExpense); ?></strong></div></div>
+                    <div class="col-md-6 col-xl-3"><div class="mini-total-card"><span>Perkiraan Keuntungan</span><strong class="<?= $projectedProfit >= 0 ? 'text-success' : 'text-danger'; ?>"><?= rp($projectedProfit); ?></strong></div></div>
                 </div>
 
-                <div class="row g-3 mb-4">
-                    <div class="col-md-6 col-xl-3"><div class="mini-total-card"><span>Termin Dibayar</span><strong><?= rp($totalPaidTerms); ?></strong></div></div>
-                    <div class="col-md-6 col-xl-3"><div class="mini-total-card"><span>Sisa Termin</span><strong><?= rp(max(0, $totalTerms - $totalPaidTerms)); ?></strong></div></div>
-                    <div class="col-md-6 col-xl-3"><div class="mini-total-card"><span>Total Biaya</span><strong><?= rp($totalExpense); ?></strong></div></div>
-                    <div class="col-md-6 col-xl-3"><div class="mini-total-card"><span>Estimasi Profit</span><strong class="<?= $projectedProfit >= 0 ? 'text-success' : 'text-danger'; ?>"><?= rp($projectedProfit); ?></strong></div></div>
+                <div class="mb-4">
+                    <div class="d-flex justify-content-between align-items-center flex-wrap gap-2 mb-3"><div><h5 class="fw-bold mb-1">Ringkasan Aktivitas Aset</h5><div class="small text-muted"><?= count($projectAssetIds); ?> aset terhubung dengan aktivitas Project ini.</div></div><a href="<?= base_url('pages/projects/detail.php?id='.$id.'&tab=transactions'); ?>" class="btn btn-sm btn-outline-success rounded-pill">Lihat Transaksi</a></div>
+                    <div class="row g-3">
+                        <div class="col-md-6 col-xl-3"><div class="mini-total-card"><span><i class="bi bi-cart-check me-1"></i>Pembelian Aset</span><strong><?= rp($assetPurchaseTotal); ?></strong></div></div>
+                        <div class="col-md-6 col-xl-3"><div class="mini-total-card"><span><i class="bi bi-cash-coin me-1"></i>Hasil Penjualan Aset</span><strong class="text-success"><?= rp($assetSaleTotal); ?></strong></div></div>
+                        <div class="col-md-6 col-xl-3"><div class="mini-total-card"><span><i class="bi bi-key me-1"></i>Pemasukan dari Sewa Aset</span><strong class="text-success"><?= rp($assetRentalTotal); ?></strong></div></div>
+                        <div class="col-md-6 col-xl-3"><div class="mini-total-card"><span><i class="bi bi-tools me-1"></i>Biaya Perawatan Aset</span><strong class="text-danger"><?= rp($assetMaintenanceTotal); ?></strong></div></div>
+                    </div>
                 </div>
 
                 <div class="row g-4">
@@ -2549,15 +2597,11 @@ require_once __DIR__ . '/../../includes/sidebar.php';
                     <button class="btn btn-success" data-bs-toggle="modal" data-bs-target="#addTermModal"><i class="bi bi-plus-lg me-1"></i> Tambah Termin</button>
                 </div>
 
-                <div class="alert alert-info-subtle border-0 rounded-4 mb-3">
-                    <div class="fw-bold mb-1"><i class="bi bi-info-circle me-1"></i> Panduan Termin</div>
-                    <div class="small text-muted">Gunakan Termin untuk mencatat tagihan ke client. One Time Project biasanya memakai DP/progress/pelunasan, sedangkan Contract Project bisa memakai termin bulanan, triwulan, tahunan, atau custom sesuai kontrak.</div>
-                </div>
-
                 <div class="row g-3 mb-3">
-                    <div class="col-md-4"><div class="mini-total-card"><span>Total Termin</span><strong><?= rp($totalTerms); ?></strong></div></div>
-                    <div class="col-md-4"><div class="mini-total-card"><span>Sudah Dibayar</span><strong><?= rp($totalPaidTerms); ?></strong></div></div>
-                    <div class="col-md-4"><div class="mini-total-card"><span>Sisa Tagihan</span><strong><?= rp(max(0, $totalTerms - $totalPaidTerms)); ?></strong></div></div>
+                    <div class="col-md-6 col-xl-3"><div class="mini-total-card"><span>Total Tagihan</span><strong><?= rp($totalTerms); ?></strong></div></div>
+                    <div class="col-md-6 col-xl-3"><div class="mini-total-card"><span>Tagihan Sudah Dibayar</span><strong><?= rp($totalPaidTerms); ?></strong></div></div>
+                    <div class="col-md-6 col-xl-3"><div class="mini-total-card"><span>Potongan Pajak</span><strong class="text-danger"><?= rp($totalTermTax); ?></strong></div></div>
+                    <div class="col-md-6 col-xl-3"><div class="mini-total-card"><span>Dana Bersih Diterima</span><strong class="text-success"><?= rp($totalPaidNet); ?></strong></div></div>
                 </div>
 
                 <?php if (empty($terms)): ?>
@@ -2569,6 +2613,8 @@ require_once __DIR__ . '/../../includes/sidebar.php';
                                 <tr>
                                     <th>Termin</th>
                                     <th>Nominal</th>
+                                    <th>Potongan Pajak</th>
+                                    <th>Diterima Bersih</th>
                                     <th>Jatuh Tempo</th>
                                     <th>Status</th>
                                     <th>Catatan</th>
@@ -2587,8 +2633,10 @@ require_once __DIR__ . '/../../includes/sidebar.php';
                                             <div class="small text-muted"><?= $term['percentage'] !== null ? pct($term['percentage']) : '-'; ?></div>
                                         </td>
                                         <td class="fw-bold"><?= rp($term['amount']); ?></td>
+                                        <td><strong class="text-danger">- <?= rp($term['tax_amount'] ?? 0); ?></strong><div class="small text-muted"><?= (float)($term['tax_percentage'] ?? 0) > 0 ? pct($term['tax_percentage']) : 'Tanpa potongan'; ?></div></td>
+                                        <td><strong class="text-success"><?= rp((float)($term['received_amount'] ?? 0) > 0 ? $term['received_amount'] : max(0, (float)$term['amount'] - (float)($term['tax_amount'] ?? 0))); ?></strong><div class="small text-muted">Selisih setelah pajak: <?= rp($term['tax_amount'] ?? 0); ?></div></td>
                                         <td><?= safe_date($term['due_date']); ?></td>
-                                        <td><span class="badge text-bg-<?= $badge; ?> rounded-pill"><?= $isOverdue ? 'overdue' : e($term['status']); ?></span></td>
+                                        <td><span class="badge text-bg-<?= $badge; ?> rounded-pill"><?= $isOverdue ? 'Terlambat Dibayar' : (($term['status'] ?? '') === 'paid' ? 'Sudah Dibayar' : 'Belum Dibayar'); ?></span></td>
                                         <td><?= e($term['notes'] ?: '-'); ?></td>
                                         <td class="text-end">
                                             <?php
@@ -2619,21 +2667,16 @@ require_once __DIR__ . '/../../includes/sidebar.php';
             <?php if ($activeTab === 'funds'): ?>
                 <div class="d-flex justify-content-between align-items-center flex-wrap gap-2 mb-3">
                     <div>
-                        <h5 class="fw-bold mb-1">Pendanaan Project</h5>
+                        <h5 class="fw-bold mb-1">Sumber Dana Project</h5>
                         <div class="text-muted small">Ringkasan otomatis dari transaksi project. Tidak ada input pendanaan manual.</div>
                     </div>
                     <a class="btn btn-success" href="<?= base_url('pages/projects/detail.php?id=' . $id . '&tab=transactions'); ?>"><i class="bi bi-plus-lg me-1"></i> Tambah Transaksi</a>
                 </div>
 
-                <div class="alert alert-info-subtle border-0 rounded-4 mb-3">
-                    <div class="fw-bold mb-1"><i class="bi bi-info-circle me-1"></i> Panduan Pendanaan Otomatis</div>
-                    <div class="small text-muted">Pendanaan di halaman ini dihitung otomatis dari transaksi pengeluaran project. Jika sumber dana memakai akun perusahaan, saldo akun kas/bank global akan berkurang di Keuangan. Jika memakai dana personal, sistem mencatat hutang talangan kepada nama lengkap tersebut.</div>
-                </div>
-
                 <div class="row g-3 mb-3">
-                    <div class="col-md-4"><div class="mini-total-card"><span>Dana Perusahaan</span><strong><?= rp($totalCompanyFund); ?></strong></div></div>
-                    <div class="col-md-4"><div class="mini-total-card"><span>Talangan Personal</span><strong><?= rp($totalPersonFund); ?></strong></div></div>
-                    <div class="col-md-4"><div class="mini-total-card"><span>Total Dana Terpakai</span><strong><?= rp($totalAllFund); ?></strong></div></div>
+                    <div class="col-md-4"><div class="mini-total-card"><span>Dibayar dari Kas/Bank</span><strong><?= rp($totalCompanyFund); ?></strong></div></div>
+                    <div class="col-md-4"><div class="mini-total-card"><span>Dibayar Dulu oleh Personal</span><strong><?= rp($totalPersonFund); ?></strong></div></div>
+                    <div class="col-md-4"><div class="mini-total-card"><span>Total Biaya yang Sudah Dibayar</span><strong><?= rp($totalAllFund); ?></strong></div></div>
                 </div>
 
                 <?php if (!empty($companyFundSummary)): ?>
@@ -2729,16 +2772,11 @@ require_once __DIR__ . '/../../includes/sidebar.php';
                     <button class="btn btn-success" data-bs-toggle="modal" data-bs-target="#addTransactionModal"><i class="bi bi-plus-lg me-1"></i> Tambah Transaksi</button>
                 </div>
 
-                <div class="alert alert-info-subtle border-0 rounded-4 mb-3">
-                    <div class="fw-bold mb-1"><i class="bi bi-info-circle me-1"></i> Panduan Transaksi</div>
-                    <div class="small text-muted">Gunakan Transaksi untuk mencatat pemasukan/pengeluaran manual, nota pembelian, invoice, dan pengeluaran aset. Jika pembelian menjadi inventaris perusahaan, centang sebagai aset.</div>
-                </div>
-
                 <div class="row g-3 mb-3">
-                    <div class="col-md-3"><div class="mini-total-card"><span>Pendapatan</span><strong><?= rp($totalClientIncome); ?></strong></div></div>
-                    <div class="col-md-3"><div class="mini-total-card"><span>Pengeluaran</span><strong><?= rp($totalExpense); ?></strong></div></div>
+                    <div class="col-md-3"><div class="mini-total-card"><span>Total Pemasukan Project</span><strong><?= rp($totalClientIncome); ?></strong></div></div>
+                    <div class="col-md-3"><div class="mini-total-card"><span>Total Biaya Project</span><strong><?= rp($totalExpense); ?></strong></div></div>
                     <div class="col-md-3"><div class="mini-total-card"><span>Biaya Pekerja</span><strong><?= rp($totalWorkerCost); ?></strong></div></div>
-                    <div class="col-md-3"><div class="mini-total-card"><span>Cash Position</span><strong><?= rp($cashPosition); ?></strong></div></div>
+                    <div class="col-md-3"><div class="mini-total-card"><span>Saldo Project Saat Ini</span><strong><?= rp($cashPosition); ?></strong></div></div>
                 </div>
 
                 <?php if (empty($transactions)): ?>
@@ -2754,7 +2792,7 @@ require_once __DIR__ . '/../../includes/sidebar.php';
                                     <th>Keterangan</th>
                                     <th>Sumber Dana</th>
                                     <th>Nominal</th>
-                                    <th>Aset</th>
+                                    <th>Aktivitas Aset</th>
                                     <th class="text-end">Aksi</th>
                                 </tr>
                             </thead>
@@ -2767,7 +2805,18 @@ require_once __DIR__ . '/../../includes/sidebar.php';
                                         <td><?= e($trx['description'] ?: '-'); ?></td>
                                         <td><?= e($trx['funding_source']); ?><?= $trx['person_name'] ? ' - ' . e($trx['person_name']) : ''; ?></td>
                                         <td class="fw-bold <?= $trx['transaction_type'] === 'income' ? 'text-success' : 'text-danger'; ?>"><?= rp($trx['amount']); ?></td>
-                                        <td><?= (int) $trx['is_asset'] === 1 ? '<span class="badge text-bg-info rounded-pill">Ya</span>' : '-'; ?></td>
+                                        <td>
+                                            <?php
+                                                $assetSource = $trx['source_module'] ?? 'manual';
+                                                $activity = null;
+                                                if ((int)$trx['is_asset'] === 1) $activity = ['Dibeli','info','bi-cart-check'];
+                                                elseif ($assetSource === 'asset_sale') $activity = ['Dijual','success','bi-cash-coin'];
+                                                elseif ($assetSource === 'asset_rental') $activity = ['Disewakan','primary','bi-key'];
+                                                elseif ($assetSource === 'asset_maintenance') $activity = ['Maintenance','warning','bi-tools'];
+                                                $assetInfo = $transactionAssetInfo[(int)$trx['id']] ?? null;
+                                            ?>
+                                            <?php if ($activity): ?><span class="badge text-bg-<?= $activity[1]; ?> rounded-pill"><i class="bi <?= $activity[2]; ?> me-1"></i><?= $activity[0]; ?></span><?php if ($assetInfo): ?><div class="small mt-1"><a class="text-decoration-none" href="<?= base_url('pages/assets/detail.php?id='.(int)$assetInfo['asset_id']); ?>"><?= e(trim(($assetInfo['asset_code'] ?: '').' - '.($assetInfo['asset_name'] ?: ''), ' -')); ?></a></div><?php endif; ?><?php else: ?>-<?php endif; ?>
+                                        </td>
                                         <td class="text-end">
                                             <?php
                                                 $trxEvidenceItems = project_merge_evidence_items(
@@ -2814,11 +2863,6 @@ require_once __DIR__ . '/../../includes/sidebar.php';
                     <strong>Catatan sistem pekerja:</strong> karyawan internal tetap dicatat sebagai biaya project berdasarkan periode dan rate project, tetapi pembayarannya diproses melalui Payroll. Freelance dan borongan dibayar dari Project dan memiliki slip pembayaran. Lembur, tambahan, dan potongan bisa ditambahkan.
                 </div>
 
-                <div class="alert alert-info-subtle border-0 rounded-4 mb-3">
-                    <div class="fw-bold mb-1"><i class="bi bi-info-circle me-1"></i> Panduan Pekerja</div>
-                    <div class="small text-muted">Gunakan Pekerja untuk mencatat biaya tenaga kerja project. Internal bisa dikaitkan dengan absensi, freelance memakai hari kerja manual, dan borongan memakai nilai pekerjaan.</div>
-                </div>
-
                 <?php if (empty($workers)): ?>
                     <div class="empty-state">Belum ada pekerja project.</div>
                 <?php else: ?>
@@ -2856,7 +2900,7 @@ require_once __DIR__ . '/../../includes/sidebar.php';
                                         </td>
                                         <td>
                                             <div class="small"><?= safe_date($worker['start_date']); ?> - <?= safe_date($worker['end_date']); ?></div>
-                                            <div class="fw-semibold"><?= (int) $worker['work_days']; ?> hari<?= $worker['worker_type'] === 'borongan' ? ' periode' : ''; ?></div>
+                                            <div class="fw-semibold"><?= project_day_number($worker['work_days']); ?> hari<?= $worker['worker_type'] === 'borongan' ? ' periode' : ''; ?></div>
                                         </td>
                                         <td class="fw-bold"><?= rp($worker['rate']); ?></td>
                                         <td class="fw-bold text-danger"><?= rp($worker['total_amount'] ?: $worker['rate']); ?></td>
@@ -2868,7 +2912,7 @@ require_once __DIR__ . '/../../includes/sidebar.php';
                                         <td>
                                             <?php $att = $workerAttendanceStats[$worker['id']] ?? null; ?>
                                             <?php if ($worker['worker_type'] === 'employee' && $att): ?>
-                                                <div class="fw-semibold"><?= (int) $att['attendance_days']; ?> hari hadir</div>
+                                                <div class="fw-semibold"><?= project_day_number($att['attendance_days']); ?> hari hadir</div>
                                                 <div class="small text-muted"><?= round(((int) $att['total_work_minutes']) / 60, 1); ?> jam kerja</div>
                                                 <div class="small text-muted">Lembur fingerprint: <?= round(((int) ($att['overtime_minutes'] ?? 0)) / 60, 1); ?> jam</div>
                                             <?php elseif ($worker['worker_type'] === 'employee'): ?>
@@ -2940,7 +2984,7 @@ require_once __DIR__ . '/../../includes/sidebar.php';
                                         <?php if (!$isExternal): ?>
                                             <a class="btn btn-sm btn-outline-primary flex-fill" href="<?= e($galleryUrl); ?>" download><i class="bi bi-download"></i></a>
                                         <?php endif; ?>
-                                        <a class="btn btn-sm btn-outline-danger flex-fill" href="<?= base_url('pages/projects/delete_gallery.php?id=' . $img['id'] . '&project_id=' . $id); ?>" onclick="return confirm('Hapus file/link ini?')"><i class="bi bi-trash"></i></a>
+                                        <form method="POST" action="<?= base_url('pages/projects/delete_gallery.php'); ?>" class="d-flex flex-fill" onsubmit="return confirm('Hapus file/link ini?')"><?= csrf_field(); ?><input type="hidden" name="id" value="<?= (int)$img['id']; ?>"><button class="btn btn-sm btn-outline-danger flex-fill"><i class="bi bi-trash"></i></button></form>
                                     </div>
                                 </div>
                             </div>
@@ -3135,7 +3179,7 @@ function render_project_evidence_modal($modalId, $title, array $items)
                     <label class="form-label fw-semibold">Tipe Transaksi</label>
                     <select name="transaction_type" class="form-select">
                         <option value="expense">Pengeluaran</option>
-                        <option value="income">Pendapatan Client</option>
+                        <option value="income">Pemasukan Project</option>
                     </select>
                 </div>
                 <div class="col-md-6">
@@ -3339,7 +3383,7 @@ function render_project_evidence_modal($modalId, $title, array $items)
                 </div>
                 <div class="col-md-6 worker-days-field">
                     <label class="form-label fw-semibold">Jumlah Hari Kerja</label>
-                    <input type="number" name="work_days" class="form-control" min="1" value="1">
+                    <input type="number" name="work_days" class="form-control" min="0.5" step="0.5" value="1">
                 </div>
                 <div class="col-md-6">
                     <label class="form-label fw-semibold">Rate/Nilai</label>
@@ -3481,6 +3525,18 @@ function render_project_evidence_modal($modalId, $title, array $items)
                         <option value="other">Lainnya</option>
                     </select>
                 </div>
+                <div class="col-md-6">
+                    <label class="form-label fw-semibold">Nominal Bersih yang Diterima</label>
+                    <input type="text" name="received_amount" class="form-control currency-input term-net-input" value="<?= number_format((float)$term['amount'], 0, ',', '.'); ?>" required>
+                    <small class="text-muted">Masukkan nominal yang benar-benar masuk setelah dipotong client.</small>
+                </div>
+                <div class="col-md-6">
+                    <div class="alert alert-warning rounded-4 mb-0 h-100">
+                        <span class="small">Potongan pajak otomatis</span>
+                        <div class="fw-bold fs-5 term-tax-preview" data-gross="<?= (float) $term['amount']; ?>">Rp 0</div>
+                        <small class="term-tax-percent-preview">0%</small>
+                    </div>
+                </div>
                 <div class="col-12">
                     <label class="form-label fw-semibold">Bukti Pembayaran Termin <span class="text-muted">(optional, bisa lebih dari satu)</span></label>
                     <input type="file" name="receipt_images[]" class="form-control" accept="image/*" multiple>
@@ -3593,7 +3649,7 @@ function render_project_evidence_modal($modalId, $title, array $items)
                 <div class="col-md-6"><label class="form-label fw-semibold">Tipe Pembayaran</label><select name="payment_type" class="form-select payment-type"><?php foreach (['daily','per_attendance','monthly','borongan'] as $s): ?><option value="<?= $s; ?>" <?= $worker['payment_type'] === $s ? 'selected' : ''; ?>><?= $s; ?></option><?php endforeach; ?></select></div>
                 <div class="col-md-6 worker-date-field"><label class="form-label fw-semibold">Tanggal Mulai</label><input type="date" name="start_date" class="form-control" value="<?= e($worker['start_date']); ?>"></div>
                 <div class="col-md-6 worker-date-field"><label class="form-label fw-semibold">Tanggal Selesai</label><input type="date" name="end_date" class="form-control" value="<?= e($worker['end_date']); ?>"></div>
-                <div class="col-md-6 worker-days-field"><label class="form-label fw-semibold">Jumlah Hari Kerja</label><input type="number" name="work_days" class="form-control" min="1" value="<?= (int) ($worker['work_days'] ?: 1); ?>"></div>
+                <div class="col-md-6 worker-days-field"><label class="form-label fw-semibold">Jumlah Hari Kerja</label><input type="number" name="work_days" class="form-control" min="0.5" step="0.5" value="<?= e((float) ($worker['work_days'] ?: 1)); ?>"></div>
                 <div class="col-md-6"><label class="form-label fw-semibold">Rate/Nilai</label><input type="text" name="rate" class="form-control money-input" value="<?= e(number_format($worker['rate'], 0, ',', '.')); ?>" required></div>
                 <div class="col-md-3"><label class="form-label fw-semibold">Lembur (Jam)</label><input type="number" step="0.01" min="0" name="overtime_hours" class="form-control" value="<?= e($worker['overtime_hours'] ?? 0); ?>"></div>
                 <div class="col-md-3"><label class="form-label fw-semibold">Rate Lembur</label><input type="text" name="overtime_rate" class="form-control money-input" value="<?= e(number_format($worker['overtime_rate'] ?? 0, 0, ',', '.')); ?>"></div>
@@ -3762,6 +3818,27 @@ document.addEventListener('DOMContentLoaded', function () {
         input.addEventListener('input', function () {
             this.value = formatNumber(this.value);
         });
+    });
+
+    document.querySelectorAll('form').forEach(form => {
+        const netInput = form.querySelector('.term-net-input');
+        const taxPreview = form.querySelector('.term-tax-preview');
+        const percentagePreview = form.querySelector('.term-tax-percent-preview');
+        if (!netInput || !taxPreview || !percentagePreview) return;
+
+        const gross = Number(taxPreview.dataset.gross) || 0;
+        const refreshTax = () => {
+            const received = Math.min(gross, parseMoney(netInput.value));
+            const tax = Math.max(0, gross - received);
+            const percentage = gross > 0 ? tax / gross * 100 : 0;
+            taxPreview.textContent = 'Rp ' + formatNumber(tax);
+            percentagePreview.textContent = percentage.toFixed(2).replace('.', ',') + '%';
+        };
+        netInput.addEventListener('input', function () {
+            this.value = formatNumber(this.value);
+            refreshTax();
+        });
+        refreshTax();
     });
 
     // Termin dua arah: isi persentase -> nominal otomatis, isi nominal -> persentase otomatis.
@@ -3972,7 +4049,7 @@ document.addEventListener('DOMContentLoaded', function () {
         new Chart(ctx, {
             type: 'line',
             data: {
-                labels: ['Nilai Kontrak', 'Pendapatan', 'Dana Terpakai', 'Pengeluaran', 'Biaya Pekerja', 'Cash Position'],
+                labels: ['Nilai Kontrak', 'Pemasukan', 'Dana Digunakan', 'Biaya Project', 'Biaya Pekerja', 'Saldo Project'],
                 datasets: [{
                     label: 'Keuangan Project',
                     data: [

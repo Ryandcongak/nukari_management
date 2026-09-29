@@ -166,6 +166,7 @@ require_once __DIR__ . '/../../includes/sidebar.php';
                         <th>Termin</th>
                         <th>Persentase</th>
                         <th>Jumlah</th>
+                        <th>PIC</th>
                         <th>Jatuh Tempo</th>
                         <th>Status</th>
                         <th class="text-end">Aksi</th>
@@ -193,6 +194,7 @@ require_once __DIR__ . '/../../includes/sidebar.php';
                                 <td><?= $t['percentage'] ? htmlspecialchars($t['percentage']) . '%' : '-'; ?></td>
 
                                 <td><?= rupiah($t['amount']); ?></td>
+                                <td><?= htmlspecialchars($t['pic_name'] ?: '-'); ?></td>
 
                                 <td><?= date('d M Y', strtotime($t['due_date'])); ?></td>
 

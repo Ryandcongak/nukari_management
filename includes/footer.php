@@ -16,6 +16,7 @@
 */
 $companyWhatsapp = preg_replace('/\D+/', '', getenv('NUKARI_WHATSAPP') ?: '');
 $aiEnabled = getenv('NUKARI_AI_ENABLED') === '1';
+$isProjectPage = strpos(str_replace('\\', '/', $_SERVER['SCRIPT_NAME'] ?? ''), '/pages/projects/') !== false;
 ?>
 
 </div><!-- /.app-wrapper -->
@@ -86,7 +87,42 @@ $aiEnabled = getenv('NUKARI_AI_ENABLED') === '1';
 <!-- Bootstrap JS -->
 <script src="<?= base_url('assets/vendor/bootstrap/js/bootstrap.bundle.min.js'); ?>"></script>
 <!-- Nukari UI Global Components -->
-<script src="<?= base_url('assets/js/nukari-ui.js'); ?>?v=1.0"></script>
+<script src="<?= base_url('assets/js/nukari-ui.js'); ?>?v=1.2"></script>
+
+<?php if ($isProjectPage): ?>
+<script>
+(function () {
+    const params = new URLSearchParams(window.location.search);
+    const projectId = params.get('id') || params.get('project_id') || '';
+    const storageKey = 'nukari-project-scroll:' + window.location.pathname + (projectId ? ':project-' + projectId : '');
+    let saveTimer = null;
+
+    if ('scrollRestoration' in history) history.scrollRestoration = 'manual';
+
+    function savePosition() {
+        sessionStorage.setItem(storageKey, String(Math.max(0, Math.round(window.scrollY))));
+    }
+
+    function restorePosition() {
+        const savedPosition = Number(sessionStorage.getItem(storageKey));
+        if (!Number.isFinite(savedPosition) || savedPosition <= 0) return;
+        window.scrollTo({ top: savedPosition, left: 0, behavior: 'auto' });
+    }
+
+    window.addEventListener('scroll', function () {
+        window.clearTimeout(saveTimer);
+        saveTimer = window.setTimeout(savePosition, 80);
+    }, { passive: true });
+    window.addEventListener('pagehide', savePosition);
+    document.addEventListener('DOMContentLoaded', function () {
+        window.requestAnimationFrame(function () {
+            window.requestAnimationFrame(restorePosition);
+        });
+        window.setTimeout(restorePosition, 180);
+    });
+})();
+</script>
+<?php endif; ?>
 
 
 <script>
@@ -142,45 +178,87 @@ $aiEnabled = getenv('NUKARI_AI_ENABLED') === '1';
     | State desktop disimpan di localStorage.
     */
     document.addEventListener('DOMContentLoaded', function() {
+        const body = document.body;
+        const sidebar = document.getElementById('appSidebar');
         const sidebarToggle = document.getElementById('sidebarToggle');
-        const isMobile = () => window.innerWidth <= 992;
+        const sidebarBackdrop = document.getElementById('sidebarBackdrop');
+        const sidebarMobileClose = document.getElementById('sidebarMobileClose');
+        const mobileQuery = window.matchMedia('(max-width: 991.98px)');
 
-        if (localStorage.getItem('nukari_sidebar_collapsed') === 'yes' && !isMobile()) {
-            document.body.classList.add('sidebar-collapsed');
+        if (!sidebar || !sidebarToggle) return;
+
+        function setToggleState(isOpen) {
+            sidebarToggle.setAttribute('aria-expanded', isOpen ? 'true' : 'false');
+            sidebarToggle.setAttribute('aria-label', isOpen ? 'Tutup menu navigasi' : 'Buka menu navigasi');
         }
 
-        if (sidebarToggle) {
-            sidebarToggle.addEventListener('click', function() {
-                if (isMobile()) {
-                    document.body.classList.toggle('sidebar-mobile-open');
-                    return;
-                }
-
-                document.body.classList.toggle('sidebar-collapsed');
-
-                if (document.body.classList.contains('sidebar-collapsed')) {
-                    localStorage.setItem('nukari_sidebar_collapsed', 'yes');
-                } else {
-                    localStorage.setItem('nukari_sidebar_collapsed', 'no');
-                }
-            });
+        function openMobileSidebar() {
+            body.classList.add('sidebar-mobile-open');
+            setToggleState(true);
+            window.setTimeout(function() {
+                sidebarMobileClose?.focus();
+            }, 0);
         }
 
-        document.addEventListener('click', function(e) {
-            if (!isMobile()) return;
+        function closeMobileSidebar(returnFocus) {
+            body.classList.remove('sidebar-mobile-open');
+            setToggleState(false);
+            if (returnFocus) sidebarToggle.focus();
+        }
 
-            const sidebar = document.getElementById('appSidebar');
-            const toggle = document.getElementById('sidebarToggle');
+        function syncLayout() {
+            if (mobileQuery.matches) {
+                body.classList.remove('sidebar-collapsed');
+                closeMobileSidebar(false);
+                return;
+            }
 
-            if (!sidebar || !toggle) return;
+            body.classList.remove('sidebar-mobile-open');
+            const collapsed = localStorage.getItem('nukari_sidebar_collapsed') === 'yes';
+            body.classList.toggle('sidebar-collapsed', collapsed);
+            setToggleState(!collapsed);
+        }
 
-            const clickedInsideSidebar = sidebar.contains(e.target);
-            const clickedToggle = toggle.contains(e.target);
+        sidebarToggle.addEventListener('click', function() {
+            if (mobileQuery.matches) {
+                if (body.classList.contains('sidebar-mobile-open')) closeMobileSidebar(true);
+                else openMobileSidebar();
+                return;
+            }
 
-            if (!clickedInsideSidebar && !clickedToggle) {
-                document.body.classList.remove('sidebar-mobile-open');
+            body.classList.toggle('sidebar-collapsed');
+            const collapsed = body.classList.contains('sidebar-collapsed');
+            localStorage.setItem('nukari_sidebar_collapsed', collapsed ? 'yes' : 'no');
+            setToggleState(!collapsed);
+        });
+
+        sidebarBackdrop?.addEventListener('click', function() {
+            closeMobileSidebar(true);
+        });
+
+        sidebarMobileClose?.addEventListener('click', function() {
+            closeMobileSidebar(true);
+        });
+
+        sidebar.addEventListener('click', function(event) {
+            if (!mobileQuery.matches) return;
+            const link = event.target.closest('a.nav-link');
+            if (link && !link.hasAttribute('data-bs-toggle')) closeMobileSidebar(false);
+        });
+
+        document.addEventListener('keydown', function(event) {
+            if (event.key === 'Escape' && body.classList.contains('sidebar-mobile-open')) {
+                closeMobileSidebar(true);
             }
         });
+
+        if (typeof mobileQuery.addEventListener === 'function') {
+            mobileQuery.addEventListener('change', syncLayout);
+        } else {
+            mobileQuery.addListener(syncLayout);
+        }
+
+        syncLayout();
     });
 
     /*

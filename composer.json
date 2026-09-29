@@ -1,6 +1,9 @@
 {
+    "name": "nukari/management-system",
+    "description": "Internal management system for PT Nukari Kriya Raya",
+    "license": "proprietary",
     "require": {
-        "phpoffice/phpspreadsheet": "^1.29"
+        "phpoffice/phpspreadsheet": "^1.30.6"
     },
     "config": {
         "platform": {

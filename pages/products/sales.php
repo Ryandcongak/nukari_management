@@ -213,7 +213,7 @@ if (isset($_GET['export']) && $_GET['export'] === 'csv') {
     header('Content-Disposition: attachment; filename=penjualan-produk-' . date('Ymd-His') . '.csv');
 
     $fp = fopen('php://output', 'w');
-    fputcsv($fp, ['Kode', 'Tanggal', 'Produk', 'Channel', 'Customer', 'Qty', 'Harga Unit', 'Gross', 'Fee', 'Ongkir', 'Net', 'HPP', 'Profit', 'Metode Bayar', 'Catatan']);
+    fputcsv($fp, ['Kode', 'Tanggal', 'Produk', 'Channel', 'Customer', 'Qty', 'Harga Unit', 'Gross', 'Fee', 'Ongkir', 'Net', 'Harga Dasar', 'Profit', 'Metode Bayar', 'Catatan']);
     foreach ($rows as $r) {
         fputcsv($fp, [
             $r['sale_code'],
@@ -392,7 +392,7 @@ require_once __DIR__ . '/_style.php';
                         <div class="col-6">
                             <label class="form-label">Harga / Unit</label>
                             <input name="unit_price" id="unit_price" class="form-control money-input" required placeholder="0">
-                            <small class="text-muted" id="hppHint">HPP/unit: -</small>
+                            <small class="text-muted" id="hppHint">Harga dasar/unit: -</small>
                         </div>
 
                         <div class="col-6">
@@ -428,7 +428,7 @@ require_once __DIR__ . '/_style.php';
                                         <strong id="netPreview">Rp 0</strong>
                                     </div>
                                     <div class="sales-result-item">
-                                        <span>HPP</span>
+                                        <span>Harga Dasar</span>
                                         <strong id="hppPreview">Rp 0</strong>
                                     </div>
                                     <div class="sales-result-item" id="profitBox">
@@ -458,7 +458,7 @@ require_once __DIR__ . '/_style.php';
                     <span class="badge bg-light text-dark">UX</span>
                 </div>
                 <ol>
-                    <li>Pilih produk, sistem akan membaca stok, harga jual, dan HPP/unit.</li>
+                    <li>Pilih produk, sistem akan membaca stok, harga jual, dan harga dasar/unit.</li>
                     <li>Isi qty dan harga jual. Ringkasan profit akan tampil otomatis.</li>
                     <li>Untuk Tokopedia/Shopee, isi fee marketplace agar profit lebih akurat.</li>
                     <li>Qty tidak boleh melebihi stok tersedia.</li>
@@ -478,7 +478,7 @@ require_once __DIR__ . '/_style.php';
                     <div class="value"><?= product_money($summary['net']); ?></div>
                 </div>
                 <div class="sales-mini-card">
-                    <div class="label">Total HPP</div>
+                    <div class="label">Total Harga Dasar</div>
                     <div class="value"><?= product_money($summary['hpp']); ?></div>
                 </div>
                 <div class="sales-mini-card">
@@ -520,7 +520,7 @@ require_once __DIR__ . '/_style.php';
                                 <th class="text-end">Gross</th>
                                 <th class="text-end">Fee/Ongkir</th>
                                 <th class="text-end">Net</th>
-                                <th class="text-end">HPP</th>
+                                <th class="text-end">Harga Dasar</th>
                                 <th class="text-end">Profit</th>
                                 <th>Status</th>
                                 <th class="text-end">Aksi</th>
@@ -586,7 +586,7 @@ require_once __DIR__ . '/_style.php';
                                                     <div class="col-md-3"><strong>Net</strong><br><?= product_money($s['net_amount']); ?></div>
                                                     <div class="col-md-3"><strong>Fee Marketplace</strong><br><?= product_money($s['marketplace_fee']); ?></div>
                                                     <div class="col-md-3"><strong>Ongkir</strong><br><?= product_money($s['shipping_cost']); ?></div>
-                                                    <div class="col-md-3"><strong>HPP</strong><br><?= product_money($s['hpp_total']); ?></div>
+                                                    <div class="col-md-3"><strong>Harga Dasar</strong><br><?= product_money($s['hpp_total']); ?></div>
                                                     <div class="col-md-3"><strong>Profit</strong><br><?= product_money($s['profit_amount']); ?></div>
                                                     <div class="col-12"><strong>Catatan</strong><br><?= nl2br(product_safe($s['notes'] ?: '-')); ?></div>
                                                 </div>
@@ -674,7 +674,7 @@ require_once __DIR__ . '/_style.php';
         const profit = net - hpp;
 
         stockHint.textContent = 'Stok tersedia: ' + formatQty(p.stock) + ' ' + p.unit;
-        hppHint.textContent = 'HPP/unit: ' + formatCurrency(p.hpp);
+        hppHint.textContent = 'Harga dasar/unit: ' + formatCurrency(p.hpp);
 
         grossPreview.textContent = formatCurrency(gross);
         netPreview.textContent = formatCurrency(net);

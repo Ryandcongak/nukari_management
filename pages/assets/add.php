@@ -1,22 +1,26 @@
 <?php
 require_once __DIR__ . '/../../includes/auth.php';
+require_once __DIR__ . '/asset_helpers.php';
+require_once __DIR__ . '/../../includes/master_data_helper.php';
 $pageTitle = 'Tambah Aset - Nukari';
 $error = '';
 
 
-function asset_money_value($value)
-{
-    $value = trim((string)$value);
+if (!function_exists('asset_money_value')) {
+    function asset_money_value($value)
+    {
+        $value = trim((string)$value);
 
-    // Format Indonesia:
-    // 1.000.000 => 1000000
-    $value = str_replace('.', '', $value);
+        // Format Indonesia:
+        // 1.000.000 => 1000000
+        $value = str_replace('.', '', $value);
 
-    // Jika suatu saat ada format desimal:
-    // 1.000.000,50 => 1000000.50
-    $value = str_replace(',', '.', $value);
+        // Jika suatu saat ada format desimal:
+        // 1.000.000,50 => 1000000.50
+        $value = str_replace(',', '.', $value);
 
-    return (float)$value;
+        return (float)$value;
+    }
 }
 
 function asset_allowed_image_ext($filename)
@@ -77,6 +81,7 @@ function asset_safe_delete_file($path)
 
 
 $employees = $pdo->query("SELECT id, full_name FROM employees WHERE employment_status='active' ORDER BY full_name ASC")->fetchAll(PDO::FETCH_ASSOC);
+$financeAccounts = $pdo->query("SELECT id, account_name, current_balance FROM finance_accounts WHERE status='active' ORDER BY is_default DESC, account_name")->fetchAll(PDO::FETCH_ASSOC);
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $asset_code = clean_input($_POST['asset_code'] ?? '');
@@ -91,11 +96,17 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $asset_status = clean_input($_POST['asset_status'] ?? 'active');
     $ownership_status = clean_input($_POST['ownership_status'] ?? 'owned');
     $use_type = clean_input($_POST['use_type'] ?? 'internal');
+    $maintenance_required = isset($_POST['maintenance_required']) ? 1 : 0;
     $current_value = asset_money_value($_POST['current_value'] ?? $purchase_price);
     $warranty_until = ($_POST['warranty_until'] ?? '') ?: null;
+    $record_purchase = isset($_POST['record_purchase']);
+    $account_id = (int)($_POST['account_id'] ?? 0);
+    $payment_method = $_POST['payment_method'] ?? 'cash';
 
     if ($asset_name === '') {
         $error = 'Nama aset wajib diisi.';
+    } elseif ($record_purchase && ($purchase_price <= 0 || $account_id <= 0)) {
+        $error = 'Harga beli dan akun pembayaran wajib diisi jika pembelian dicatat ke Keuangan.';
     } else {
         try {
             $mainPhoto = null;
@@ -105,11 +116,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
             if ($asset_code === '') $asset_code = 'AST-' . date('YmdHis');
 
+            $pdo->beginTransaction();
+
             $stmt = $pdo->prepare("
                 INSERT INTO assets 
-                (asset_code, asset_name, category, purchase_date, purchase_price, current_value, warranty_until, condition_status, asset_status, ownership_status, use_type, location, responsible_employee_id, photo, notes, source_type) 
+                (asset_code, asset_name, category, purchase_date, purchase_price, current_value, warranty_until, condition_status, asset_status, ownership_status, use_type, maintenance_required, location, responsible_employee_id, photo, notes, source_type)
                 VALUES 
-                (:asset_code, :asset_name, :category, :purchase_date, :purchase_price, :current_value, :warranty_until, :condition_status, :asset_status, :ownership_status, :use_type, :location, :responsible_employee_id, :photo, :notes, 'manual')
+                (:asset_code, :asset_name, :category, :purchase_date, :purchase_price, :current_value, :warranty_until, :condition_status, :asset_status, :ownership_status, :use_type, :maintenance_required, :location, :responsible_employee_id, :photo, :notes, 'manual')
             ");
             $stmt->execute([
                 ':asset_code' => $asset_code,
@@ -123,6 +136,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 ':asset_status' => $asset_status,
                 ':ownership_status' => $ownership_status,
                 ':use_type' => $use_type,
+                ':maintenance_required' => $maintenance_required,
                 ':location' => $location ?: null,
                 ':responsible_employee_id' => $responsible_employee_id ?: null,
                 ':photo' => $mainPhoto,
@@ -130,6 +144,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             ]);
 
             $assetId = (int)$pdo->lastInsertId();
+
+            if ($record_purchase) {
+                asset_create_transaction($pdo, 'expense', $purchase_price, 'Pembelian aset: ' . $asset_name, $payment_method, null, null, $assetId, $account_id, $purchase_date ?: date('Y-m-d'));
+            }
 
             $photoPaths = [];
             if ($mainPhoto) $photoPaths[] = $mainPhoto;
@@ -146,9 +164,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 }
             }
 
+            $pdo->commit();
+
             $_SESSION['success'] = 'Aset berhasil ditambahkan.';
             redirect('pages/assets/index.php');
         } catch (Exception $e) {
+            if ($pdo->inTransaction()) $pdo->rollBack();
             $error = $e->getMessage();
         }
     }
@@ -203,7 +224,7 @@ require_once __DIR__ . '/../../includes/sidebar.php';
 
             <div class="col-md-4">
                 <label class="form-label fw-semibold">Kategori</label>
-                <input name="category" class="form-control" placeholder="Mesin / Kendaraan / Furniture">
+                <input name="category" class="form-control" list="assetCategoryList" placeholder="Mesin / Kendaraan / Furniture"><?= master_datalist($pdo,'asset_category','assetCategoryList'); ?>
             </div>
             <div class="col-md-4">
                 <label class="form-label fw-semibold">Tanggal Beli</label>
@@ -221,6 +242,9 @@ require_once __DIR__ . '/../../includes/sidebar.php';
                 <label class="form-label fw-semibold">Garansi Sampai</label>
                 <input type="date" name="warranty_until" class="form-control">
             </div>
+            <div class="col-md-4 d-flex align-items-end"><div class="form-check mb-3"><input class="form-check-input" type="checkbox" name="record_purchase" value="1" id="recordPurchase"><label class="form-check-label fw-semibold" for="recordPurchase">Catat pembelian ke Keuangan</label></div></div>
+            <div class="col-md-4"><label class="form-label fw-semibold">Akun Pembayaran</label><select name="account_id" class="form-select"><option value="">Pilih akun jika dicatat</option><?php foreach($financeAccounts as $account): ?><option value="<?= (int)$account['id']; ?>"><?= htmlspecialchars($account['account_name']); ?> · <?= rupiah($account['current_balance']); ?></option><?php endforeach; ?></select></div>
+            <div class="col-md-4"><label class="form-label fw-semibold">Metode Pembayaran</label><select name="payment_method" class="form-select"><option value="cash">Cash</option><option value="bank_transfer">Bank Transfer</option><option value="qris">QRIS</option><option value="other">Lainnya</option></select></div>
 
             <div class="col-md-4">
                 <label class="form-label fw-semibold">Kondisi</label>
@@ -265,7 +289,10 @@ require_once __DIR__ . '/../../includes/sidebar.php';
             </div>
             <div class="col-md-4">
                 <label class="form-label fw-semibold">Lokasi</label>
-                <input name="location" class="form-control" placeholder="Workshop / Office / Project">
+                <input name="location" class="form-control" list="assetLocationList" placeholder="Workshop / Office / Project"><?= master_datalist($pdo,'location','assetLocationList'); ?>
+            </div>
+            <div class="col-md-4 d-flex align-items-end">
+                <div class="form-check mb-3"><input class="form-check-input" type="checkbox" name="maintenance_required" value="1" id="maintenanceRequired"><label class="form-check-label fw-semibold" for="maintenanceRequired">Memerlukan maintenance berkala</label></div>
             </div>
             <div class="col-md-4">
                 <label class="form-label fw-semibold">Penanggung Jawab</label>

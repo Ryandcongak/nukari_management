@@ -7,6 +7,7 @@ $products = $pdo->query("SELECT * FROM products WHERE status='active' ORDER BY p
 $typeMap = [
     'recycle' => 'Recycle Product',
     'eco_enzyme' => 'Eco Enzyme',
+    'fertilizer' => 'Produk Pupuk',
     'custom' => 'Custom Product',
     'service' => 'Service',
     'other' => 'Product'
@@ -22,7 +23,7 @@ $typeMap = [
 <style>
 *{box-sizing:border-box}
 :root{--green:#12864f;--ink:#111827;--muted:#64748b;--line:#d7dee8;--soft:#f4f7f6}
-body{font-family:Arial,Helvetica,sans-serif;background:var(--soft);margin:0;padding:22px;color:var(--ink)}
+body{font-family:-apple-system,BlinkMacSystemFont,"SF Pro Text","Helvetica Neue",Arial,sans-serif;background:var(--soft);margin:0;padding:22px;color:var(--ink)}
 .toolbar{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;margin-bottom:16px}.toolbar-title{font-weight:900;font-size:18px;line-height:1.2}.toolbar-sub{font-size:12px;color:var(--muted);margin-top:2px}.actions{display:flex;gap:8px;align-items:center;flex-wrap:wrap}.btn{border:1px solid #d1d5db;background:#fff;border-radius:999px;padding:10px 16px;font-weight:800;cursor:pointer;text-decoration:none;color:var(--ink)}.btn.green{background:var(--green);color:#fff;border-color:var(--green)}.input-copy{width:76px;border:1px solid #d1d5db;border-radius:999px;padding:10px 12px;font-weight:800;text-align:center;background:#fff}
 .sheet{background:#fff;border-radius:20px;padding:22px;max-width:840px;margin:0 auto;box-shadow:0 20px 50px rgba(15,23,42,.08)}.labels{display:grid;grid-template-columns:repeat(3,1fr);gap:12px}.label{height:58mm;border:1.2px solid #0f172a;border-radius:12px;padding:9px 8px;text-align:center;display:flex;flex-direction:column;justify-content:center;align-items:center;break-inside:avoid;background:#fff;overflow:hidden}.brand{font-size:9px;text-transform:uppercase;font-weight:900;color:var(--green);letter-spacing:.08em;line-height:1}.name{font-weight:900;font-size:13px;line-height:1.12;margin-top:5px;max-width:100%;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}.type{font-size:9.5px;color:var(--muted);font-weight:700;margin-top:3px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:100%}.qr{width:82px;height:82px;margin-top:7px;margin-bottom:6px}.qr img,.qr canvas{width:82px!important;height:82px!important}.code{font-family:Consolas,'Courier New',monospace;font-weight:900;font-size:10px;letter-spacing:.02em;word-break:break-all;line-height:1.15}.scan-note{font-size:8px;color:var(--muted);font-weight:700;margin-top:3px}.empty{padding:30px;text-align:center;color:var(--muted);font-weight:800}
 @media print{body{background:#fff;padding:0}.toolbar{display:none}.sheet{box-shadow:none;border-radius:0;max-width:none;padding:0}.labels{gap:5mm;grid-template-columns:repeat(3,1fr)}.label{height:58mm;border:1px solid #000;border-radius:8px;page-break-inside:avoid}@page{size:A4 portrait;margin:8mm}}

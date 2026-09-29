@@ -1,7 +1,8 @@
 <?php
 require_once __DIR__ . '/../../includes/auth.php';
+require_post();
 
-$id = $_GET['id'] ?? null;
+$id = $_POST['id'] ?? null;
 
 if (!$id) {
     redirect('pages/projects/index.php');
@@ -56,9 +57,9 @@ try {
 
     $pdo->commit();
 
-    redirect('pages/projects/detail.php?id=' . $project_id . '&tab=workers#tab-workers');
+    redirect('pages/projects/detail.php?id=' . $project_id . '&tab=workers');
 } catch (Exception $e) {
     $pdo->rollBack();
 
-    redirect('pages/projects/detail.php?id=' . $project_id . '&tab=workers#tab-workers');
+    redirect('pages/projects/detail.php?id=' . $project_id . '&tab=workers');
 }

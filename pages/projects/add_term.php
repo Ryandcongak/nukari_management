@@ -33,11 +33,19 @@ if (!$project) {
 
 $pageTitle = 'Tambah Termin Project - Nukari';
 $error = '';
+$employees = $pdo->query("SELECT id,full_name FROM employees WHERE employment_status='active' ORDER BY full_name")->fetchAll(PDO::FETCH_ASSOC);
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $term_name = clean_input($_POST['term_name'] ?? '');
     $percentage = $_POST['percentage'] !== '' ? $_POST['percentage'] : null;
     $amount = parse_amount_id($_POST['amount'] ?? 0);
+    $pic_employee_id = !empty($_POST['pic_employee_id']) ? (int)$_POST['pic_employee_id'] : null;
+    $pic_name = clean_input($_POST['pic_name'] ?? '');
+    if ($pic_name === '' && $pic_employee_id) {
+        $picStmt = $pdo->prepare("SELECT full_name FROM employees WHERE id=:id");
+        $picStmt->execute([':id'=>$pic_employee_id]);
+        $pic_name = (string)$picStmt->fetchColumn();
+    }
     $due_date = $_POST['due_date'] ?? '';
     $notes = clean_input($_POST['notes'] ?? '');
 
@@ -53,9 +61,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
             $stmt = $pdo->prepare("
                 INSERT INTO project_payment_terms
-                (project_id, term_name, percentage, amount, due_date, status, notes)
+                (project_id, term_name, percentage, amount, pic_employee_id, pic_name, due_date, status, notes)
                 VALUES
-                (:project_id, :term_name, :percentage, :amount, :due_date, 'unpaid', :notes)
+                (:project_id, :term_name, :percentage, :amount, :pic_employee_id, :pic_name, :due_date, 'unpaid', :notes)
             ");
 
             $stmt->execute([
@@ -63,6 +71,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 ':term_name' => $term_name,
                 ':percentage' => $percentage,
                 ':amount' => $amount,
+                ':pic_employee_id' => $pic_employee_id,
+                ':pic_name' => $pic_name ?: null,
                 ':due_date' => $due_date,
                 ':notes' => $notes ?: null
             ]);
@@ -162,6 +172,8 @@ require_once __DIR__ . '/../../includes/sidebar.php';
                         <label class="form-label fw-semibold">Tanggal Jatuh Tempo</label>
                         <input type="date" name="due_date" class="form-control" required>
                     </div>
+                    <div class="col-md-6"><label class="form-label fw-semibold">PIC Penerima Termin</label><select name="pic_employee_id" class="form-select"><option value="">PIC di luar daftar karyawan</option><?php foreach($employees as $employee): ?><option value="<?= (int)$employee['id']; ?>"><?= htmlspecialchars($employee['full_name']); ?></option><?php endforeach; ?></select></div>
+                    <div class="col-md-6"><label class="form-label fw-semibold">Nama PIC / Kontak</label><input type="text" name="pic_name" class="form-control" placeholder="Nama orang yang menerima/menangani termin"></div>
 
                     <div class="col-md-12">
                         <label class="form-label fw-semibold">Catatan</label>

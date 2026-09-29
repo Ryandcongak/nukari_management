@@ -7,17 +7,20 @@ if (!$id) {
     redirect('pages/projects/index.php');
 }
 
-$stmt = $pdo->prepare("
-    SELECT id, project_name 
-    FROM projects 
-    WHERE id = :id 
-    LIMIT 1
-");
+$stmt = $pdo->prepare("SELECT p.id,p.project_name,p.status,
+    (SELECT COUNT(*) FROM project_transactions t WHERE t.project_id=p.id) transaction_count,
+    (SELECT COUNT(*) FROM project_payment_terms pt WHERE pt.project_id=p.id) term_count
+    FROM projects p WHERE p.id=:id LIMIT 1");
 $stmt->execute([':id' => $id]);
 $project = $stmt->fetch(PDO::FETCH_ASSOC);
 
 if (!$project) {
     redirect('pages/projects/index.php');
+}
+
+$canDelete = $project['status'] === 'planning' || ((int)$project['transaction_count'] === 0 && (int)$project['term_count'] === 0);
+if (!$canDelete) {
+    redirect('pages/projects/index.php?error=Project hanya dapat dihapus ketika masih planning atau belum memiliki transaksi. Gunakan Batalkan untuk menyimpan histori.');
 }
 
 $pageTitle = 'Hapus Permanen Project - Nukari';

@@ -169,14 +169,20 @@ $where[] = "pc.payroll_month = :month";
 
 if ($keyword !== '') {
     $where[] = "(
-        e.full_name LIKE :keyword
-        OR e.employee_code LIKE :keyword
-        OR e.position LIKE :keyword
-        OR e.department LIKE :keyword
-        OR pc.component_name LIKE :keyword
-        OR pc.notes LIKE :keyword
+        e.full_name LIKE :keyword_name
+        OR e.employee_code LIKE :keyword_code
+        OR e.position LIKE :keyword_position
+        OR e.department LIKE :keyword_department
+        OR pc.component_name LIKE :keyword_component
+        OR pc.notes LIKE :keyword_notes
     )";
-    $params[':keyword'] = '%' . $keyword . '%';
+    $keywordValue = '%' . $keyword . '%';
+    $params[':keyword_name'] = $keywordValue;
+    $params[':keyword_code'] = $keywordValue;
+    $params[':keyword_position'] = $keywordValue;
+    $params[':keyword_department'] = $keywordValue;
+    $params[':keyword_component'] = $keywordValue;
+    $params[':keyword_notes'] = $keywordValue;
 }
 
 if ($typeFilter !== '') {

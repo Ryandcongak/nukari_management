@@ -45,7 +45,7 @@ foreach (array_slice($topScore, 0, 8) as $chartRow) {
 
 $attendanceChartLabels = ['Hadir', 'Alpha', 'Cuti/Izin Approved', 'Terlambat', 'Pulang Awal'];
 $attendanceChartValues = [
-    (int)($summary['present_days'] ?? 0),
+    (float)($summary['present_days'] ?? 0),
     (int)($summary['absent_days'] ?? 0),
     (int)($summary['approved_leave_days'] ?? 0),
     (int)($summary['late_days'] ?? 0),
@@ -77,36 +77,36 @@ require_once __DIR__ . '/../../includes/sidebar.php';
 <style>
     .main-content { transition: margin-left .25s ease, width .25s ease; }
     .analytics-hero {
-        border-radius: 26px;
+        border-radius: 18px;
         background: linear-gradient(135deg, #ffffff 0%, #f0fdf4 100%);
         box-shadow: 0 18px 45px rgba(15, 23, 42, .07);
-        padding: 32px;
+        padding: 24px;
         border: 1px solid #dcfce7;
     }
     .period-badge {
         display: inline-flex; align-items: center; gap: 8px;
         background: #dcfce7; color: #047857; border-radius: 999px;
-        padding: 8px 14px; font-weight: 800; font-size: 13px;
+        padding: 7px 12px; font-weight: 700; font-size: 13px;
     }
     .analytics-card, .stat-card {
-        background: #fff; border-radius: 22px; border: 1px solid #e5e7eb;
-        box-shadow: 0 14px 35px rgba(15, 23, 42, .055);
+        background: #fff; border-radius: 16px; border: 1px solid #e5e7eb;
+        box-shadow: 0 8px 24px rgba(15, 23, 42, .05);
     }
-    .analytics-card { padding: 24px; }
-    .stat-card { padding: 20px; height: 100%; border-left: 5px solid #15803d; }
-    .stat-label { color: #64748b; font-weight: 800; font-size: 13px; margin-bottom: 8px; }
-    .stat-value { font-size: 27px; font-weight: 900; color: #111827; line-height: 1.1; }
+    .analytics-card { padding: 20px; }
+    .stat-card { padding: 17px; height: 100%; border-left: 4px solid #15803d; }
+    .stat-label { color: #64748b; font-weight: 700; font-size: 13px; margin-bottom: 7px; }
+    .stat-value { font-size: 24px; font-weight: 800; color: #111827; line-height: 1.1; }
     .stat-sub { color: #64748b; font-size: 12px; margin-top: 6px; }
-    .filter-box { background: #f8fafc; border: 1px solid #e5e7eb; border-radius: 18px; padding: 18px; }
+    .filter-box { background: #f8fafc; border: 1px solid #e5e7eb; border-radius: 13px; padding: 16px; }
 
     .chart-card {
-        background: #fff; border-radius: 22px; border: 1px solid #e5e7eb;
-        box-shadow: 0 14px 35px rgba(15, 23, 42, .055); padding: 22px; height: 100%;
+        background: #fff; border-radius: 16px; border: 1px solid #e5e7eb;
+        box-shadow: 0 8px 24px rgba(15, 23, 42, .05); padding: 18px; height: 100%;
     }
     .chart-title { font-weight: 900; color: #111827; margin-bottom: 4px; }
     .chart-subtitle { color: #64748b; font-size: 12px; margin-bottom: 16px; }
-    .chart-wrap { position: relative; min-height: 280px; }
-    .chart-wrap.chart-small { min-height: 245px; }
+    .chart-wrap { position: relative; min-height: 250px; }
+    .chart-wrap.chart-small { min-height: 220px; }
     .stat-card.stat-success { border-left-color: #16a34a; background: linear-gradient(135deg, #ffffff 0%, #f0fdf4 100%); }
     .stat-card.stat-primary { border-left-color: #2563eb; background: linear-gradient(135deg, #ffffff 0%, #eff6ff 100%); }
     .stat-card.stat-warning { border-left-color: #f59e0b; background: linear-gradient(135deg, #ffffff 0%, #fffbeb 100%); }
@@ -118,9 +118,9 @@ require_once __DIR__ . '/../../includes/sidebar.php';
     .ranking-list { display: flex; flex-direction: column; gap: 12px; }
     .ranking-item {
         display: flex; justify-content: space-between; align-items: center; gap: 14px;
-        padding: 13px 14px; border-radius: 16px; border: 1px solid #e5e7eb; background: #f8fafc;
+        padding: 11px 13px; border-radius: 12px; border: 1px solid #e5e7eb; background: #f8fafc;
     }
-    .ranking-name { font-weight: 900; color: #111827; }
+    .ranking-name { font-weight: 700; color: #111827; }
     .ranking-meta, .employee-meta { font-size: 12px; color: #64748b; }
     .score-pill {
         display: inline-flex; align-items: center; gap: 6px; border-radius: 999px;
@@ -135,7 +135,7 @@ require_once __DIR__ . '/../../includes/sidebar.php';
     .mini-bar span { display: block; height: 100%; border-radius: 999px; background: #15803d; }
     .table thead th { background: #f1f5f9; color: #334155; font-size: 12px; white-space: nowrap; }
     .table td { vertical-align: middle; }
-    .insight-box { background: #f8fafc; border: 1px dashed #cbd5e1; border-radius: 18px; padding: 18px; }
+    .insight-box { background: #f8fafc; border: 1px dashed #cbd5e1; border-radius: 13px; padding: 15px; }
 
     .colorful-section {
         background: linear-gradient(135deg, #ffffff 0%, #f0fdf4 42%, #eff6ff 100%);
@@ -151,6 +151,11 @@ require_once __DIR__ . '/../../includes/sidebar.php';
     .status-legend { display:flex; flex-wrap:wrap; gap:8px; margin-top:12px; }
     .legend-pill { display:inline-flex; align-items:center; gap:7px; padding:7px 10px; border-radius:999px; font-size:12px; font-weight:800; background:#fff; border:1px solid #e5e7eb; }
     .legend-dot { width:10px; height:10px; border-radius:999px; display:inline-block; }
+    .detail-summary { background:#f8fafc; border:1px solid #e5e7eb; border-radius:12px; padding:11px 12px; display:flex; justify-content:space-between; gap:10px; }
+    .detail-summary span { color:#64748b; font-size:12px; }
+    .detail-summary strong { color:#0f172a; }
+    .detail-table .badge { font-weight:600; }
+    .employee-detail-head h5 { font-weight:750; color:#0f172a; }
 
     @media print {
         .sidebar, .topbar, .btn, .filter-print-hidden { display: none !important; }
@@ -175,12 +180,6 @@ require_once __DIR__ . '/../../includes/sidebar.php';
                 </p>
             </div>
             <div class="d-flex flex-wrap gap-2 filter-print-hidden">
-                <a href="<?= base_url('pages/hr/leaves.php'); ?>" class="btn btn-outline-success">
-                    <i class="bi bi-calendar2-check me-1"></i> Cuti / Izin
-                </a>
-                <a href="<?= base_url('pages/attendances/index.php'); ?>" class="btn btn-outline-secondary">
-                    <i class="bi bi-calendar-check me-1"></i> Absensi
-                </a>
                 <a href="<?= h($exportUrl); ?>" class="btn btn-outline-primary">
                     <i class="bi bi-file-earmark-spreadsheet me-1"></i> Export Excel
                 </a>
@@ -197,15 +196,9 @@ require_once __DIR__ . '/../../includes/sidebar.php';
                 <div class="col-lg-2 col-md-6">
                     <label class="form-label fw-semibold">Jenis Evaluasi</label>
                     <select name="type" id="periodType" class="form-select">
-                        <option value="weekly" <?= $periodType === 'weekly' ? 'selected' : ''; ?>>Mingguan</option>
                         <option value="monthly" <?= $periodType === 'monthly' ? 'selected' : ''; ?>>Bulanan</option>
                         <option value="yearly" <?= $periodType === 'yearly' ? 'selected' : ''; ?>>Tahunan</option>
-                        <option value="custom" <?= $periodType === 'custom' ? 'selected' : ''; ?>>Custom</option>
                     </select>
-                </div>
-                <div class="col-lg-2 col-md-6 period-field period-weekly">
-                    <label class="form-label fw-semibold">Mulai Minggu</label>
-                    <input type="date" name="week_start" value="<?= h($_GET['week_start'] ?? date('Y-m-d')); ?>" class="form-control">
                 </div>
                 <div class="col-lg-2 col-md-6 period-field period-monthly">
                     <label class="form-label fw-semibold">Bulan</label>
@@ -214,14 +207,6 @@ require_once __DIR__ . '/../../includes/sidebar.php';
                 <div class="col-lg-2 col-md-6 period-field period-yearly">
                     <label class="form-label fw-semibold">Tahun</label>
                     <input type="number" name="year" min="2020" max="2100" value="<?= h($_GET['year'] ?? date('Y')); ?>" class="form-control">
-                </div>
-                <div class="col-lg-2 col-md-6 period-field period-custom">
-                    <label class="form-label fw-semibold">Dari</label>
-                    <input type="date" name="start_date" value="<?= h($_GET['start_date'] ?? date('Y-m-01')); ?>" class="form-control">
-                </div>
-                <div class="col-lg-2 col-md-6 period-field period-custom">
-                    <label class="form-label fw-semibold">Sampai</label>
-                    <input type="date" name="end_date" value="<?= h($_GET['end_date'] ?? date('Y-m-t')); ?>" class="form-control">
                 </div>
                 <div class="col-lg-2 col-md-6">
                     <label class="form-label fw-semibold">Departemen</label>
@@ -253,7 +238,6 @@ require_once __DIR__ . '/../../includes/sidebar.php';
                 </div>
             </div>
             <div class="d-flex flex-wrap gap-2 mt-3">
-                <a href="<?= base_url('pages/hr/analytics.php?type=weekly&week_start=' . date('Y-m-d')); ?>" class="btn btn-sm btn-outline-success">Minggu Ini</a>
                 <a href="<?= base_url('pages/hr/analytics.php?type=monthly&month=' . date('Y-m')); ?>" class="btn btn-sm btn-outline-success">Bulan Ini</a>
                 <a href="<?= base_url('pages/hr/analytics.php?type=yearly&year=' . date('Y')); ?>" class="btn btn-sm btn-outline-success">Tahun Ini</a>
             </div>
@@ -267,7 +251,7 @@ require_once __DIR__ . '/../../includes/sidebar.php';
     <div class="row g-3 mb-4">
         <div class="col-xl-2 col-md-4 col-sm-6"><div class="stat-card stat-primary"><div class="stat-label">Karyawan</div><div class="stat-value"><?= hr_to_int($summary['employees']); ?></div><div class="stat-sub">Masuk evaluasi</div></div></div>
         <div class="col-xl-2 col-md-4 col-sm-6"><div class="stat-card stat-success"><div class="stat-label">Rata-rata Score</div><div class="stat-value"><?= h($summary['average_score']); ?></div><div class="stat-sub">Skala 0–100</div></div></div>
-        <div class="col-xl-2 col-md-4 col-sm-6"><div class="stat-card stat-purple"><div class="stat-label">Attendance Rate</div><div class="stat-value"><?= h($summary['average_attendance_rate']); ?>%</div><div class="stat-sub">Hari kerja efektif</div></div></div>
+        <div class="col-xl-2 col-md-4 col-sm-6"><div class="stat-card stat-purple"><div class="stat-label">Attendance Rate</div><div class="stat-value"><?= h($summary['average_attendance_rate']); ?>%</div><div class="stat-sub">Hari kalender efektif</div></div></div>
         <div class="col-xl-2 col-md-4 col-sm-6"><div class="stat-card stat-slate"><div class="stat-label">Jam Kerja</div><div class="stat-value"><?= hr_decimal_hours($summary['work_minutes']); ?></div><div class="stat-sub">Total jam</div></div></div>
         <div class="col-xl-2 col-md-4 col-sm-6"><div class="stat-card stat-warning"><div class="stat-label">Lembur</div><div class="stat-value"><?= hr_decimal_hours($summary['overtime_minutes']); ?></div><div class="stat-sub">Total jam</div></div></div>
         <div class="col-xl-2 col-md-4 col-sm-6"><div class="stat-card stat-danger"><div class="stat-label">Perlu Perhatian</div><div class="stat-value"><?= hr_to_int($summary['need_attention']); ?></div><div class="stat-sub">Warning/evaluasi</div></div></div>
@@ -311,13 +295,18 @@ require_once __DIR__ . '/../../includes/sidebar.php';
                 <h5 class="fw-bold mb-2"><i class="bi bi-info-circle text-success me-2"></i>Formula Penilaian</h5>
                 <div class="text-muted small">
                     Score dihitung dari: kehadiran efektif 35%, disiplin 25%, jam kerja efektif 25%, kontribusi lembur 10%, dan cuti/izin approved 5%.
-                    Sabtu/Minggu tidak dihitung sebagai hari kerja. Cuti/izin/sakit/dinas yang sudah approved tidak langsung merusak attendance rate.
+                    Periode mengikuti setting payroll. Semua hari dihitung 8 jam. Cuti/izin/sakit/dinas approved tidak langsung menurunkan attendance rate.
+                    Keterlambatan dan pulang awal memakai nilai baku yang tersimpan pada absensi, tanpa toleransi tambahan di Analytics.
+                    Setengah hari pagi: masuk 07.00–08.30 dan pulang 11.30–13.59. Setengah hari siang: masuk 11.30–13.30 dan pulang mulai 16.30.
+                    Hari penuh pada semua hari: masuk 08.00–08.30 dan pulang 16.30–17.30.
+                    Karyawan tanpa alpha dengan durasi lembur melebihi total waktu telat dan pulang awal mendapat apresiasi Sangat Baik sebagai loyal dan berdedikasi.
+                    Status Baik diberikan saat frekuensi lembur melampaui masing-masing kejadian telat/pulang awal, atau durasi lembur menutup minimal 75% waktu kedisiplinan.
                 </div>
             </div>
             <div class="col-lg-4">
                 <div class="insight-box small">
-                    <strong>Standar jam kerja efektif:</strong> 7 jam/hari<br>
-                    <span class="text-muted">08.00–12.00 dan 14.00–17.00.</span>
+                    <strong>Jadwal kerja aktif:</strong> 8 jam/hari<br>
+                    <span class="text-muted">Aturan yang sama berlaku Senin–Minggu.</span>
                 </div>
             </div>
             <div class="col-12">
@@ -369,17 +358,35 @@ require_once __DIR__ . '/../../includes/sidebar.php';
         </div>
     </div>
 
+    <div class="analytics-card mb-4 border border-warning-subtle" style="background:linear-gradient(135deg,#fffbeb,#ffffff)">
+        <div class="d-flex flex-wrap justify-content-between align-items-center gap-3">
+            <div><h5 class="fw-bold mb-1"><i class="bi bi-award-fill text-warning me-2"></i>Rekomendasi Kandidat Reward</h5><div class="text-muted small">Score minimal 90, tidak alpha, tidak pulang awal, dan memiliki data absensi pada periode ini.</div></div>
+            <div class="d-flex flex-wrap gap-2"><?php foreach ($rewardCandidates as $row): ?><span class="badge rounded-pill text-bg-warning px-3 py-2"><?= h($row['full_name']); ?> · <?= h($row['score']); ?></span><?php endforeach; ?><?php if (empty($rewardCandidates)): ?><span class="text-muted small">Belum ada kandidat yang memenuhi seluruh syarat.</span><?php endif; ?></div>
+        </div>
+    </div>
+
+    <h5 class="fw-bold mb-3"><i class="bi bi-stars text-success me-2"></i>Pencapaian Positif</h5>
     <div class="row g-4 mb-4">
-        <div class="col-lg-4"><div class="analytics-card h-100"><h5 class="fw-bold mb-3"><i class="bi bi-clock text-success me-2"></i>Top Jam Kerja</h5><div class="ranking-list"><?php foreach ($topWork as $row): ?><div class="ranking-item"><div><div class="ranking-name"><?= h($row['full_name']); ?></div><div class="ranking-meta"><?= h($row['department'] ?? '-'); ?></div></div><strong><?= hr_decimal_hours($row['total_work_minutes']); ?> jam</strong></div><?php endforeach; ?><?php if (empty($topWork)): ?><div class="text-muted">Belum ada data.</div><?php endif; ?></div></div></div>
-        <div class="col-lg-4"><div class="analytics-card h-100"><h5 class="fw-bold mb-3"><i class="bi bi-clock-history text-success me-2"></i>Top Lembur</h5><div class="ranking-list"><?php foreach ($topOvertime as $row): ?><div class="ranking-item"><div><div class="ranking-name"><?= h($row['full_name']); ?></div><div class="ranking-meta"><?= h($row['department'] ?? '-'); ?></div></div><strong><?= hr_decimal_hours($row['total_overtime_minutes']); ?> jam</strong></div><?php endforeach; ?><?php if (empty($topOvertime)): ?><div class="text-muted">Belum ada data.</div><?php endif; ?></div></div></div>
-        <div class="col-lg-4"><div class="analytics-card h-100"><h5 class="fw-bold mb-3"><i class="bi bi-exclamation-triangle text-danger me-2"></i>Terlambat Terbanyak</h5><div class="ranking-list"><?php foreach ($topLate as $row): ?><div class="ranking-item"><div><div class="ranking-name"><?= h($row['full_name']); ?></div><div class="ranking-meta"><?= hr_minutes_to_text($row['late_minutes']); ?></div></div><strong><?= hr_to_int($row['late_days']); ?>x</strong></div><?php endforeach; ?><?php if (empty($topLate)): ?><div class="text-muted">Belum ada data.</div><?php endif; ?></div></div></div>
+        <div class="col-xl-3 col-md-6"><div class="analytics-card h-100"><h6 class="fw-bold text-success">Paling Sering Datang Awal</h6><div class="ranking-list"><?php foreach ($mostEarlyArrival as $row): ?><div class="ranking-item"><div class="ranking-name"><?= h($row['full_name']); ?></div><strong><?= hr_to_int($row['early_arrival_days']); ?>x</strong></div><?php endforeach; ?><?php if (!$mostEarlyArrival): ?><div class="text-muted">Belum ada data.</div><?php endif; ?></div></div></div>
+        <div class="col-xl-3 col-md-6"><div class="analytics-card h-100"><h6 class="fw-bold text-success">Tidak/Paling Jarang Pulang Awal</h6><div class="ranking-list"><?php foreach ($bestNoEarlyLeave as $row): ?><div class="ranking-item"><div class="ranking-name"><?= h($row['full_name']); ?></div><strong><?= hr_to_int($row['early_leave_days']); ?>x</strong></div><?php endforeach; ?><?php if (!$bestNoEarlyLeave): ?><div class="text-muted">Belum ada data.</div><?php endif; ?></div></div></div>
+        <div class="col-xl-3 col-md-6"><div class="analytics-card h-100"><h6 class="fw-bold text-success">Libur/Cuti Paling Sedikit</h6><div class="ranking-list"><?php foreach ($leastLeave as $row): ?><div class="ranking-item"><div class="ranking-name"><?= h($row['full_name']); ?></div><strong><?= hr_to_int($row['approved_leave_days']); ?> hari</strong></div><?php endforeach; ?><?php if (!$leastLeave): ?><div class="text-muted">Belum ada data.</div><?php endif; ?></div></div></div>
+        <div class="col-xl-3 col-md-6"><div class="analytics-card h-100"><h6 class="fw-bold text-success">Lembur Terbanyak</h6><div class="ranking-list"><?php foreach ($mostOvertime as $row): ?><div class="ranking-item"><div class="ranking-name"><?= h($row['full_name']); ?></div><strong><?= hr_decimal_hours($row['total_overtime_minutes']); ?> jam</strong></div><?php endforeach; ?><?php if (!$mostOvertime): ?><div class="text-muted">Belum ada data.</div><?php endif; ?></div></div></div>
+    </div>
+
+    <h5 class="fw-bold mb-1"><i class="bi bi-arrow-left-right text-warning me-2"></i>Informasi Pembanding</h5>
+    <div class="text-muted small mb-3">Data kebalikan untuk konteks admin, bukan penalti otomatis. Cuti approved dan sedikit lembur tidak selalu berarti kinerja buruk.</div>
+    <div class="row g-4 mb-4">
+        <div class="col-xl-3 col-md-6"><div class="analytics-card h-100"><h6 class="fw-bold text-danger">Paling Jarang Datang Awal</h6><div class="ranking-list"><?php foreach ($leastEarlyArrival as $row): ?><div class="ranking-item"><div class="ranking-name"><?= h($row['full_name']); ?></div><strong><?= hr_to_int($row['early_arrival_days']); ?>x</strong></div><?php endforeach; ?><?php if (!$leastEarlyArrival): ?><div class="text-muted">Belum ada data.</div><?php endif; ?></div></div></div>
+        <div class="col-xl-3 col-md-6"><div class="analytics-card h-100"><h6 class="fw-bold text-danger">Pulang Awal Terbanyak</h6><div class="ranking-list"><?php foreach ($mostEarlyLeave as $row): ?><div class="ranking-item"><div class="ranking-name"><?= h($row['full_name']); ?></div><strong><?= hr_to_int($row['early_leave_days']); ?>x</strong></div><?php endforeach; ?><?php if (!$mostEarlyLeave): ?><div class="text-muted">Belum ada data.</div><?php endif; ?></div></div></div>
+        <div class="col-xl-3 col-md-6"><div class="analytics-card h-100"><h6 class="fw-bold text-danger">Libur/Cuti Terbanyak</h6><div class="ranking-list"><?php foreach ($mostLeave as $row): ?><div class="ranking-item"><div class="ranking-name"><?= h($row['full_name']); ?></div><strong><?= hr_to_int($row['approved_leave_days']); ?> hari</strong></div><?php endforeach; ?><?php if (!$mostLeave): ?><div class="text-muted">Belum ada data.</div><?php endif; ?></div></div></div>
+        <div class="col-xl-3 col-md-6"><div class="analytics-card h-100"><h6 class="fw-bold text-danger">Lembur Paling Sedikit</h6><div class="ranking-list"><?php foreach ($leastOvertime as $row): ?><div class="ranking-item"><div class="ranking-name"><?= h($row['full_name']); ?></div><strong><?= hr_decimal_hours($row['total_overtime_minutes']); ?> jam</strong></div><?php endforeach; ?><?php if (!$leastOvertime): ?><div class="text-muted">Belum ada data.</div><?php endif; ?></div></div></div>
     </div>
 
     <div class="analytics-card analytics-table-card">
         <div class="d-flex flex-wrap justify-content-between align-items-center gap-2 mb-3">
             <div>
                 <h4 class="fw-bold mb-1">Tabel Evaluasi Karyawan</h4>
-                <div class="text-muted">Periode <?= h($periodText); ?> · <?= h($summary['working_days']); ?> hari kerja · <?= h($summary['employees']); ?> karyawan</div>
+                <div class="text-muted">Periode <?= h($periodText); ?> · <?= h($summary['working_days']); ?> hari kalender · <?= h($summary['employees']); ?> karyawan</div>
             </div>
         </div>
 
@@ -387,7 +394,7 @@ require_once __DIR__ . '/../../includes/sidebar.php';
             <table class="table table-hover align-middle">
                 <thead>
                     <tr>
-                        <th>Rank</th><th>Karyawan</th><th>Dept.</th><th class="text-center">Hadir</th><th class="text-center">Cuti/Izin</th><th class="text-center">Alpha</th><th class="text-center">Telat</th><th class="text-center">Pulang Awal</th><th class="text-end">Jam Kerja</th><th class="text-end">Lembur</th><th class="text-center">Attendance</th><th class="text-center">Score</th><th>Status</th><th>Catatan Meeting</th>
+                        <th>Rank</th><th>Karyawan</th><th>Dept.</th><th class="text-center">Hadir</th><th class="text-center">Cuti/Izin</th><th class="text-center">Alpha</th><th class="text-center">Telat</th><th class="text-center">Pulang Awal</th><th class="text-end">Jam Kerja</th><th class="text-end">Lembur</th><th class="text-center">Attendance</th><th class="text-center">Score</th><th>Status</th><th>Catatan Meeting</th><th>Aksi</th>
                     </tr>
                 </thead>
                 <tbody>
@@ -396,7 +403,7 @@ require_once __DIR__ . '/../../includes/sidebar.php';
                             <td><span class="rank-badge"><?= hr_to_int($row['rank']); ?></span></td>
                             <td><strong><?= h($row['full_name']); ?></strong><div class="employee-meta"><?= h($row['employee_code'] ?? '-'); ?> · <?= h($row['position'] ?? '-'); ?></div></td>
                             <td><?= h($row['department'] ?? '-'); ?></td>
-                            <td class="text-center"><?= hr_to_int($row['present_days']); ?>/<?= hr_to_int($row['effective_work_days']); ?></td>
+                            <td class="text-center"><?= hr_day_number($row['present_days']); ?>/<?= hr_day_number($row['effective_work_days']); ?><?php if (hr_to_int($row['half_day_count'] ?? 0) > 0): ?><div class="employee-meta">Setengah hari: <?= hr_to_int($row['half_day_count']); ?>x</div><?php endif; ?></td>
                             <td class="text-center"><?= hr_to_int($row['approved_leave_days']); ?><div class="employee-meta">Unpaid: <?= hr_to_int($row['unpaid_leave_days']); ?></div></td>
                             <td class="text-center"><?= hr_to_int($row['absent_days']); ?></td>
                             <td class="text-center"><?= hr_to_int($row['late_days']); ?>x<div class="employee-meta"><?= hr_minutes_to_text($row['late_minutes']); ?></div></td>
@@ -407,10 +414,11 @@ require_once __DIR__ . '/../../includes/sidebar.php';
                             <td class="text-center"><span class="score-pill"><i class="bi bi-speedometer2"></i><?= h($row['score']); ?></span></td>
                             <td><?= hr_badge_eval($row['evaluation_class'], $row['evaluation_note']); ?></td>
                             <td class="small text-muted"><?= h($row['meeting_note']); ?></td>
+                            <td><button type="button" class="btn btn-sm btn-outline-primary detail-employee-btn" data-employee-id="<?= hr_to_int($row['employee_id']); ?>" data-employee-name="<?= h($row['full_name']); ?>"><i class="bi bi-eye me-1"></i>Detail</button></td>
                         </tr>
                     <?php endforeach; ?>
                     <?php if (empty($rows)): ?>
-                        <tr><td colspan="14" class="text-center text-muted py-4">Belum ada data karyawan atau absensi pada periode ini.</td></tr>
+                        <tr><td colspan="15" class="text-center text-muted py-4">Belum ada data karyawan atau absensi pada periode ini.</td></tr>
                     <?php endif; ?>
                 </tbody>
             </table>
@@ -418,6 +426,20 @@ require_once __DIR__ . '/../../includes/sidebar.php';
 
         <div class="alert alert-light border mt-3 mb-0 small text-muted">
             <strong>Catatan:</strong> HR Analytics adalah alat evaluasi internal. Untuk payroll, tetap gunakan modul payroll agar kebijakan gaji, lembur, dan izin tidak tercampur dengan score evaluasi.
+        </div>
+    </div>
+
+    <div class="modal fade" id="employeeDetailModal" tabindex="-1" aria-hidden="true">
+        <div class="modal-dialog modal-xl modal-dialog-scrollable modal-dialog-centered">
+            <div class="modal-content border-0 rounded-4">
+                <div class="modal-header border-bottom">
+                    <h5 class="modal-title">Detail Evaluasi Karyawan</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Tutup"></button>
+                </div>
+                <div class="modal-body" id="employeeDetailContent">
+                    <div class="text-center text-muted py-5">Memuat detail...</div>
+                </div>
+            </div>
         </div>
     </div>
 </main>
@@ -571,6 +593,33 @@ require_once __DIR__ . '/../../includes/sidebar.php';
         periodType.addEventListener('change', togglePeriodFields);
         togglePeriodFields();
     }
+})();
+</script>
+
+<script>
+(function() {
+    document.addEventListener('DOMContentLoaded', function() {
+        const modalElement = document.getElementById('employeeDetailModal');
+        const content = document.getElementById('employeeDetailContent');
+        if (!modalElement || !content || typeof bootstrap === 'undefined') return;
+        const detailModal = new bootstrap.Modal(modalElement);
+
+        document.querySelectorAll('.detail-employee-btn').forEach(button => {
+            button.addEventListener('click', async function() {
+                content.innerHTML = '<div class="text-center text-muted py-5"><span class="spinner-border spinner-border-sm me-2"></span>Memuat detail...</div>';
+                detailModal.show();
+                const params = new URLSearchParams(window.location.search);
+                params.set('employee_id', this.dataset.employeeId);
+                try {
+                    const response = await fetch('<?= base_url('pages/hr/analytics_detail.php'); ?>?' + params.toString(), { credentials: 'same-origin' });
+                    if (!response.ok) throw new Error('Gagal memuat detail');
+                    content.innerHTML = await response.text();
+                } catch (error) {
+                    content.innerHTML = '<div class="alert alert-danger mb-0">Detail karyawan belum dapat dimuat. Silakan coba kembali.</div>';
+                }
+            });
+        });
+    });
 })();
 </script>
 

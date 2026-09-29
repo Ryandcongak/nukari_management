@@ -1,7 +1,12 @@
 <?php
 
-if (!defined('HR_LATE_TOLERANCE_TIME')) {
-    define('HR_LATE_TOLERANCE_TIME', '08:20:00');
+require_once __DIR__ . '/../../includes/payroll_period_helper.php';
+
+function hr_executive_position_regex(): string
+{
+    // Dewan pengawas, pemilik, dan jajaran eksekutif tidak menjadi objek
+    // evaluasi kehadiran karyawan. Termasuk variasi/typo data lama "Komisari".
+    return 'direktur|director|komisaris|komisari|commissioner|chief executive|chief financial|chief operating|(^|[^a-z])(ceo|cfo|coo)([^a-z]|$)|owner|pemilik|founder';
 }
 
 /*
@@ -56,6 +61,11 @@ function hr_number($value, $decimals = 1)
     return number_format((float)$value, $decimals, ',', '.');
 }
 
+function hr_day_number($value)
+{
+    return rtrim(rtrim(number_format((float)$value, 1, ',', '.'), '0'), ',');
+}
+
 function hr_has_column(array $columns, $column)
 {
     return in_array($column, $columns, true);
@@ -72,7 +82,13 @@ function hr_first_col(array $columns, array $candidates)
 function hr_table_exists(PDO $pdo, $table)
 {
     try {
-        $stmt = $pdo->prepare("SHOW TABLES LIKE :table_name");
+        $stmt = $pdo->prepare("
+            SELECT 1
+            FROM information_schema.TABLES
+            WHERE TABLE_SCHEMA = DATABASE()
+              AND TABLE_NAME = :table_name
+            LIMIT 1
+        ");
         $stmt->execute([':table_name' => $table]);
         return (bool)$stmt->fetchColumn();
     } catch (Throwable $e) {
@@ -120,7 +136,18 @@ function hr_safe_date($value, $fallback)
     return $fallback;
 }
 
-function hr_get_period_range($type, array $source)
+function hr_get_payroll_setting(PDO $pdo)
+{
+    try {
+        if (!hr_table_exists($pdo, 'payroll_settings')) return ['start_day' => 16, 'end_day' => 15];
+        return $pdo->query("SELECT start_day, end_day FROM payroll_settings WHERE is_active = 1 ORDER BY id ASC LIMIT 1")->fetch(PDO::FETCH_ASSOC)
+            ?: ['start_day' => 16, 'end_day' => 15];
+    } catch (Throwable $e) {
+        return ['start_day' => 16, 'end_day' => 15];
+    }
+}
+
+function hr_get_period_range(PDO $pdo, $type, array $source)
 {
     $today = new DateTime();
 
@@ -129,6 +156,7 @@ function hr_get_period_range($type, array $source)
     $year = (isset($source['year']) && preg_match('/^\d{4}$/', (string)$source['year'])) ? $source['year'] : $today->format('Y');
     $startDate = hr_safe_date($source['start_date'] ?? '', $today->format('Y-m-01'));
     $endDate = hr_safe_date($source['end_date'] ?? '', $today->format('Y-m-t'));
+    $payrollSetting = hr_get_payroll_setting($pdo);
 
     if ($type === 'weekly') {
         $start = new DateTime($weekStart);
@@ -138,7 +166,9 @@ function hr_get_period_range($type, array $source)
     }
 
     if ($type === 'yearly') {
-        return [$year . '-01-01', $year . '-12-31', 'Tahunan', $year];
+        [$start] = payroll_date_range($year . '-01', $payrollSetting);
+        [, $end] = payroll_date_range($year . '-12', $payrollSetting);
+        return [$start, $end, 'Tahunan', 'Payroll ' . $year . ' · ' . date('d/m/Y', strtotime($start)) . '–' . date('d/m/Y', strtotime($end))];
     }
 
     if ($type === 'custom') {
@@ -148,28 +178,40 @@ function hr_get_period_range($type, array $source)
         return [$start->format('Y-m-d'), $end->format('Y-m-d'), 'Custom', $start->format('d M Y') . ' - ' . $end->format('d M Y')];
     }
 
-    $start = new DateTime($month . '-01');
-    $end = clone $start;
-    $end->modify('last day of this month');
-    return [$start->format('Y-m-d'), $end->format('Y-m-d'), 'Bulanan', $start->format('F Y')];
+    [$start, $end] = payroll_date_range($month, $payrollSetting);
+    return [$start, $end, 'Bulanan', 'Payroll ' . date('m/Y', strtotime($month . '-01')) . ' · ' . date('d/m/Y', strtotime($start)) . '–' . date('d/m/Y', strtotime($end))];
 }
 
-function hr_count_weekdays($startDate, $endDate)
+function hr_count_calendar_days($startDate, $endDate)
 {
     try {
         $start = new DateTime($startDate);
         $end = new DateTime($endDate);
         if ($end < $start) return 0;
 
-        $days = 0;
-        while ($start <= $end) {
-            $day = (int)$start->format('N');
-            if (!in_array($day, [6, 7], true)) $days++;
-            $start->modify('+1 day');
-        }
-        return $days;
+        return $start->diff($end)->days + 1;
     } catch (Throwable $e) {
         return 0;
+    }
+}
+
+function hr_schedule_summary($startDate, $endDate)
+{
+    try {
+        $start = new DateTime($startDate);
+        $end = new DateTime($endDate);
+        if ($end < $start) return ['days' => 0, 'minutes' => 0];
+
+        $days = 0;
+        $minutes = 0;
+        while ($start <= $end) {
+            $days++;
+            $minutes += 480;
+            $start->modify('+1 day');
+        }
+        return ['days' => $days, 'minutes' => $minutes];
+    } catch (Throwable $e) {
+        return ['days' => 0, 'minutes' => 0];
     }
 }
 
@@ -178,7 +220,8 @@ function hr_get_department_options(PDO $pdo)
     try {
         $employeeCols = hr_table_columns($pdo, 'employees');
         if (!hr_has_column($employeeCols, 'department')) return [];
-        $stmt = $pdo->query("SELECT DISTINCT department FROM employees WHERE department IS NOT NULL AND department <> '' ORDER BY department ASC");
+        $stmt = $pdo->prepare("SELECT DISTINCT department FROM employees WHERE department IS NOT NULL AND department <> '' AND LOWER(COALESCE(position,'')) NOT REGEXP :excluded_positions ORDER BY department ASC");
+        $stmt->execute([':excluded_positions' => hr_executive_position_regex()]);
         return array_column($stmt->fetchAll(PDO::FETCH_ASSOC), 'department');
     } catch (Throwable $e) {
         return [];
@@ -197,6 +240,54 @@ function hr_badge_eval($class, $text)
 
     $class = $map[$class] ?? 'secondary';
     return '<span class="badge rounded-pill text-bg-' . $class . '">' . h($text) . '</span>';
+}
+
+function hr_evaluation_explanation(array $row): array
+{
+    $status = $row['evaluation_note'] ?? 'Belum ada data';
+    $reasons = [];
+    $positives = [];
+    $actions = [];
+
+    if (hr_to_int($row['absent_days'] ?? 0) > 0) $reasons[] = 'Alpha ' . hr_to_int($row['absent_days']) . ' hari.';
+    if (hr_to_int($row['late_days'] ?? 0) > 0) $reasons[] = 'Terlambat ' . hr_to_int($row['late_days']) . ' kali (' . hr_minutes_to_text($row['late_minutes'] ?? 0) . ').';
+    if (hr_to_int($row['early_leave_days'] ?? 0) > 0) $reasons[] = 'Pulang awal ' . hr_to_int($row['early_leave_days']) . ' kali (' . hr_minutes_to_text($row['early_leave_minutes'] ?? 0) . ').';
+    if (hr_to_int($row['unpaid_leave_days'] ?? 0) > 0) $reasons[] = 'Cuti tidak dibayar ' . hr_to_int($row['unpaid_leave_days']) . ' hari.';
+
+    if (hr_to_float($row['attendance_rate'] ?? 0) >= 90) $positives[] = 'Kehadiran tinggi: ' . hr_number($row['attendance_rate'], 1) . '%.';
+    if (hr_to_int($row['absent_days'] ?? 0) === 0) $positives[] = 'Tidak memiliki alpha.';
+    if (hr_to_int($row['early_leave_days'] ?? 0) === 0) $positives[] = 'Tidak pernah pulang awal.';
+    if (hr_to_int($row['early_arrival_days'] ?? 0) > 0) $positives[] = 'Datang lebih awal ' . hr_to_int($row['early_arrival_days']) . ' kali.';
+    if (hr_to_int($row['total_overtime_minutes'] ?? 0) > 0) $positives[] = 'Kontribusi lembur ' . hr_decimal_hours($row['total_overtime_minutes']) . ' jam.';
+
+    if ($status === 'Sangat baik') {
+        $summary = 'Kinerja dinilai sangat baik karena kehadiran dan kedisiplinan kuat, atau kontribusi lembur melampaui total masalah keterlambatan dan pulang awal.';
+        $actions[] = 'Layak dipertimbangkan sebagai kandidat reward setelah validasi atasan.';
+        $actions[] = 'Pertahankan konsistensi tanpa mendorong lembur berlebihan.';
+    } elseif ($status === 'Baik') {
+        $summary = 'Kinerja berada pada kondisi baik dan tidak memenuhi pemicu Perlu Perhatian atau Perlu Evaluasi.';
+        if (!empty($row['is_good_contributor'])) $summary .= ' Kontribusi lembur juga membantu menyeimbangkan catatan kedisiplinan.';
+        $actions[] = 'Pertahankan pola kehadiran dan perbaiki catatan kecil yang masih muncul.';
+    } elseif ($status === 'Perlu perhatian') {
+        $summary = 'Status ini muncul karena nilai di bawah 70, terlambat minimal 3 kali, atau pulang awal minimal 3 kali.';
+        $actions[] = 'Konfirmasi penyebab keterlambatan atau pulang awal bersama karyawan.';
+        $actions[] = 'Buat target perbaikan sederhana untuk periode berikutnya.';
+    } elseif ($status === 'Perlu evaluasi') {
+        $summary = 'Status ini muncul karena nilai di bawah 55 atau terdapat alpha minimal 2 hari.';
+        $actions[] = 'Lakukan pertemuan evaluasi dan verifikasi data absensi terlebih dahulu.';
+        $actions[] = 'Catat penyebab, tindakan perbaikan, dan tenggat evaluasi berikutnya.';
+    } elseif ($status === 'Cuti/Dinas') {
+        $summary = 'Periode didominasi cuti atau dinas yang telah disetujui sehingga tidak dinilai sebagai masalah kehadiran.';
+        $actions[] = 'Tidak memerlukan tindakan selama dokumen persetujuan lengkap.';
+    } else {
+        $summary = 'Belum tersedia data absensi yang cukup untuk memberikan penilaian.';
+        $actions[] = 'Periksa impor fingerprint atau pencatatan absensi periode ini.';
+    }
+
+    if (!$reasons) $reasons[] = 'Tidak ada pemicu pelanggaran utama pada periode ini.';
+    if (!$positives) $positives[] = 'Belum ada indikator positif khusus yang tercatat.';
+
+    return compact('summary', 'reasons', 'positives', 'actions');
 }
 
 function hr_bar_width($value, $max)
@@ -239,7 +330,7 @@ function hr_get_leave_summary(PDO $pdo, $periodStart, $periodEnd)
 
             $start = max($periodStart, (string)$leave['start_date']);
             $end = min($periodEnd, (string)$leave['end_date']);
-            $days = hr_count_weekdays($start, $end);
+            $days = hr_count_calendar_days($start, $end);
             if ($days <= 0) continue;
 
             if (!isset($result[$employeeId])) {
@@ -280,12 +371,11 @@ function hr_get_leave_summary(PDO $pdo, $periodStart, $periodEnd)
 
 function hr_build_analytics(PDO $pdo, array $source = [])
 {
-    $lateToleranceTime = HR_LATE_TOLERANCE_TIME;
-    $periodType = $source['type'] ?? 'weekly';
-    $allowedTypes = ['weekly', 'monthly', 'yearly', 'custom'];
-    if (!in_array($periodType, $allowedTypes, true)) $periodType = 'weekly';
+    $periodType = $source['type'] ?? 'monthly';
+    $allowedTypes = ['monthly', 'yearly'];
+    if (!in_array($periodType, $allowedTypes, true)) $periodType = 'monthly';
 
-    [$periodStart, $periodEnd, $periodLabel, $periodText] = hr_get_period_range($periodType, $source);
+    [$periodStart, $periodEnd, $periodLabel, $periodText] = hr_get_period_range($pdo, $periodType, $source);
 
     $keyword = trim((string)($source['keyword'] ?? ''));
     $departmentFilter = trim((string)($source['department'] ?? ''));
@@ -297,24 +387,68 @@ function hr_build_analytics(PDO $pdo, array $source = [])
     $dateColumn = hr_first_col($attendanceCols, ['attendance_date', 'date', 'work_date', 'tanggal']);
     $statusColumn = hr_first_col($attendanceCols, ['status', 'attendance_status']);
 
-    $morningIn = hr_first_col($attendanceCols, ['morning_check_in', 'check_in_morning', 'pagi_masuk', 'clock_in_morning']);
-    $morningOut = hr_first_col($attendanceCols, ['morning_check_out', 'check_out_morning', 'pagi_keluar', 'clock_out_morning']);
-    $afternoonIn = hr_first_col($attendanceCols, ['afternoon_check_in', 'check_in_afternoon', 'siang_masuk', 'clock_in_afternoon']);
-    $afternoonOut = hr_first_col($attendanceCols, ['afternoon_check_out', 'check_out_afternoon', 'siang_keluar', 'clock_out_afternoon']);
+    $morningIn = hr_first_col($attendanceCols, ['morning_in', 'morning_check_in', 'check_in_morning', 'pagi_masuk', 'clock_in_morning']);
+    $morningOut = hr_first_col($attendanceCols, ['morning_out', 'morning_check_out', 'check_out_morning', 'pagi_keluar', 'clock_out_morning']);
+    $afternoonIn = hr_first_col($attendanceCols, ['afternoon_in', 'afternoon_check_in', 'check_in_afternoon', 'siang_masuk', 'clock_in_afternoon']);
+    $afternoonOut = hr_first_col($attendanceCols, ['afternoon_out', 'afternoon_check_out', 'check_out_afternoon', 'siang_keluar', 'clock_out_afternoon']);
     $checkIn = hr_first_col($attendanceCols, ['check_in', 'clock_in', 'time_in']);
     $checkOut = hr_first_col($attendanceCols, ['check_out', 'clock_out', 'time_out']);
 
     $lateMinutesCol = hr_first_col($attendanceCols, ['late_minutes', 'total_late_minutes', 'minutes_late']);
     $earlyLeaveMinutesCol = hr_first_col($attendanceCols, ['early_leave_minutes', 'total_early_leave_minutes', 'minutes_early_leave']);
     $overtimeMinutesCol = hr_first_col($attendanceCols, ['overtime_minutes', 'total_overtime_minutes', 'lembur_minutes']);
+    $workMinutesCol = hr_first_col($attendanceCols, ['work_minutes', 'total_work_minutes', 'minutes_worked']);
+    $attendanceTypeCol = hr_first_col($attendanceCols, ['attendance_type']);
+    $attendanceDayValueCol = hr_first_col($attendanceCols, ['attendance_day_value']);
 
-    $lateMinutesExpression = hr_safe_minutes_column_expr($lateMinutesCol);
-    $earlyLeaveMinutesExpression = hr_safe_minutes_column_expr($earlyLeaveMinutesCol);
+    $morningHalfCase = $attendanceTypeCol
+        ? "a.`$attendanceTypeCol` = 'half_day_morning'"
+        : (($checkIn && $checkOut)
+            ? "TIME(a.`$checkIn`) BETWEEN '07:00:00' AND '08:30:00' AND TIME(a.`$checkOut`) BETWEEN '11:30:00' AND '13:59:59'"
+            : '0');
+    $afternoonHalfCase = $attendanceTypeCol
+        ? "a.`$attendanceTypeCol` = 'half_day_afternoon'"
+        : (($checkIn && $checkOut)
+            ? "TIME(a.`$checkIn`) BETWEEN '11:30:00' AND '13:30:00' AND TIME(a.`$checkOut`) >= '16:30:00'"
+            : '0');
+    $halfDayCase = "(($morningHalfCase) OR ($afternoonHalfCase))";
+    $earlyArrivalCase = ($checkIn && $checkOut)
+        ? "(($morningHalfCase AND TIME(a.`$checkIn`) < '08:00:00') OR ($afternoonHalfCase AND TIME(a.`$checkIn`) < '12:00:00') OR (NOT ($halfDayCase) AND TIME(a.`$checkIn`) < '08:00:00'))"
+        : '0';
+    if ($lateMinutesCol) {
+        // Nilai tersimpan berasal dari kalkulator absensi baku. Jangan beri
+        // toleransi kedua di Analytics karena hasilnya harus sama dengan slip.
+        $lateMinutesExpression = hr_safe_minutes_column_expr($lateMinutesCol);
+    } elseif ($checkIn && $checkOut) {
+        $lateMinutesExpression = "CASE
+            WHEN $morningHalfCase THEN GREATEST(0, TIMESTAMPDIFF(MINUTE, TIMESTAMP(a.`$dateColumn`, '08:30:00'), TIMESTAMP(a.`$dateColumn`, TIME(a.`$checkIn`))))
+            WHEN $afternoonHalfCase THEN GREATEST(0, TIMESTAMPDIFF(MINUTE, TIMESTAMP(a.`$dateColumn`, '13:30:00'), TIMESTAMP(a.`$dateColumn`, TIME(a.`$checkIn`))))
+            WHEN TIME(a.`$checkIn`) > '08:30:00' THEN TIMESTAMPDIFF(MINUTE, TIMESTAMP(a.`$dateColumn`, '08:30:00'), TIMESTAMP(a.`$dateColumn`, TIME(a.`$checkIn`)))
+            ELSE 0
+        END";
+    } else {
+        $lateMinutesExpression = '0';
+    }
+    if ($earlyLeaveMinutesCol) {
+        // Gunakan snapshot kanonik yang sama untuk Senin sampai Minggu.
+        $earlyLeaveMinutesExpression = hr_safe_minutes_column_expr($earlyLeaveMinutesCol);
+    } elseif ($checkIn && $checkOut) {
+        $earlyLeaveMinutesExpression = "CASE
+            WHEN $morningHalfCase THEN GREATEST(0, TIMESTAMPDIFF(MINUTE, TIMESTAMP(a.`$dateColumn`, TIME(a.`$checkOut`)), TIMESTAMP(a.`$dateColumn`, '11:30:00')))
+            WHEN $afternoonHalfCase THEN GREATEST(0, TIMESTAMPDIFF(MINUTE, TIMESTAMP(a.`$dateColumn`, TIME(a.`$checkOut`)), TIMESTAMP(a.`$dateColumn`, '16:30:00')))
+            WHEN TIME(a.`$checkOut`) < '16:30:00' THEN TIMESTAMPDIFF(MINUTE, TIMESTAMP(a.`$dateColumn`, TIME(a.`$checkOut`)), TIMESTAMP(a.`$dateColumn`, '16:30:00'))
+            ELSE 0
+        END";
+    } else {
+        $earlyLeaveMinutesExpression = '0';
+    }
     $overtimeMinutesExpression = $overtimeMinutesCol
         ? hr_safe_minutes_column_expr($overtimeMinutesCol)
         : hr_time_diff_minutes_expr(hr_first_col($attendanceCols, ['overtime_in', 'lembur_masuk', 'overtime_start']), hr_first_col($attendanceCols, ['overtime_out', 'lembur_keluar', 'overtime_end']));
 
-    if ($morningIn && $morningOut && $afternoonIn && $afternoonOut) {
+    if ($workMinutesCol) {
+        $workMinutesExpression = hr_safe_minutes_column_expr($workMinutesCol);
+    } elseif ($morningIn && $morningOut && $afternoonIn && $afternoonOut) {
         $workMinutesExpression = '(' . hr_time_diff_minutes_expr($morningIn, $morningOut) . ' + ' . hr_time_diff_minutes_expr($afternoonIn, $afternoonOut) . ')';
     } elseif ($checkIn && $checkOut) {
         $workMinutesExpression = hr_time_diff_minutes_expr($checkIn, $checkOut);
@@ -337,10 +471,18 @@ function hr_build_analytics(PDO $pdo, array $source = [])
         if (hr_has_column($employeeCols, 'employment_status')) {
             $employeeWhere .= " AND LOWER(COALESCE(e.employment_status, 'active')) = 'active'";
         }
+        if (hr_has_column($employeeCols, 'position')) {
+            $employeeWhere .= " AND LOWER(COALESCE(e.position, '')) NOT REGEXP :excluded_positions";
+            $params[':excluded_positions'] = hr_executive_position_regex();
+        }
 
         if ($keyword !== '') {
-            $employeeWhere .= " AND (e.full_name LIKE :keyword OR e.employee_code LIKE :keyword OR e.position LIKE :keyword OR e.department LIKE :keyword)";
-            $params[':keyword'] = '%' . $keyword . '%';
+            $employeeWhere .= " AND (e.full_name LIKE :keyword_name OR e.employee_code LIKE :keyword_code OR e.position LIKE :keyword_position OR e.department LIKE :keyword_department)";
+            $keywordPattern = '%' . $keyword . '%';
+            $params[':keyword_name'] = $keywordPattern;
+            $params[':keyword_code'] = $keywordPattern;
+            $params[':keyword_position'] = $keywordPattern;
+            $params[':keyword_department'] = $keywordPattern;
         }
 
         if ($departmentFilter !== '' && hr_has_column($employeeCols, 'department')) {
@@ -349,29 +491,20 @@ function hr_build_analytics(PDO $pdo, array $source = [])
         }
 
         $workPositiveCase = "($workMinutesExpression) > 0";
+        if ($attendanceDayValueCol) {
+            $presentCase = "CASE WHEN a.id IS NULL THEN 0 ELSE GREATEST(0, LEAST(1, COALESCE(a.`$attendanceDayValueCol`, 0))) END";
+        } elseif ($statusColumn) {
+            $presentCase = "CASE WHEN LOWER(COALESCE(a.`$statusColumn`, '')) IN ('present','hadir','late','terlambat') OR $workPositiveCase THEN CASE WHEN $halfDayCase THEN 0.5 ELSE 1 END ELSE 0 END";
+        } else {
+            $presentCase = "CASE WHEN a.id IS NOT NULL AND $workPositiveCase THEN CASE WHEN $halfDayCase THEN 0.5 ELSE 1 END ELSE 0 END";
+        }
 
         if ($statusColumn) {
-            $presentCase = "CASE WHEN LOWER(COALESCE(a.`$statusColumn`, '')) IN ('present','hadir','late','terlambat') OR $workPositiveCase THEN 1 ELSE 0 END";
             $absentCase = "CASE WHEN LOWER(COALESCE(a.`$statusColumn`, '')) IN ('absent','alpha','alpa','tidak hadir') THEN 1 ELSE 0 END";
-            $lateTimeExpression = $checkIn
-                ? "TIME(COALESCE(a.`$checkIn`, '00:00:00'))"
-                : "'00:00:00'";
-            $lateCase = "CASE 
-                WHEN $lateTimeExpression > '$lateToleranceTime'
-                THEN 1 
-                ELSE 0 
-            END";
+            $lateCase = "CASE WHEN $lateMinutesExpression > 0 THEN 1 ELSE 0 END";
         } else {
-            $presentCase = "CASE WHEN a.id IS NOT NULL AND $workPositiveCase THEN 1 ELSE 0 END";
             $absentCase = "0";
-            $lateTimeExpression = $checkIn
-                ? "TIME(COALESCE(a.`$checkIn`, '00:00:00'))"
-                : "'00:00:00'";
-            $lateCase = "CASE 
-                WHEN $lateTimeExpression > '$lateToleranceTime'
-                THEN 1 
-                ELSE 0 
-            END";
+            $lateCase = "CASE WHEN $lateMinutesExpression > 0 THEN 1 ELSE 0 END";
         }
 
         $selectDepartment = hr_has_column($employeeCols, 'department') ? 'e.department' : "'' AS department";
@@ -387,12 +520,15 @@ function hr_build_analytics(PDO $pdo, array $source = [])
                 $selectDepartment,
                 COUNT(a.id) AS attendance_rows,
                 COALESCE(SUM($presentCase), 0) AS present_days,
+                COALESCE(SUM(CASE WHEN $halfDayCase THEN 1 ELSE 0 END), 0) AS half_day_count,
+                COALESCE(SUM(CASE WHEN $earlyArrivalCase THEN 1 ELSE 0 END), 0) AS early_arrival_days,
                 COALESCE(SUM($absentCase), 0) AS absent_days,
                 COALESCE(SUM($lateCase), 0) AS late_days,
                 COALESCE(SUM($lateMinutesExpression), 0) AS late_minutes,
                 COALESCE(SUM(CASE WHEN $earlyLeaveMinutesExpression > 0 THEN 1 ELSE 0 END), 0) AS early_leave_days,
                 COALESCE(SUM($earlyLeaveMinutesExpression), 0) AS early_leave_minutes,
                 COALESCE(SUM($workMinutesExpression), 0) AS total_work_minutes,
+                COALESCE(SUM(CASE WHEN $overtimeMinutesExpression > 0 THEN 1 ELSE 0 END), 0) AS overtime_days,
                 COALESCE(SUM($overtimeMinutesExpression), 0) AS total_overtime_minutes
             FROM employees e
             LEFT JOIN attendances a
@@ -414,10 +550,9 @@ function hr_build_analytics(PDO $pdo, array $source = [])
     }
 
     $periodDays = max(1, (new DateTime($periodStart))->diff(new DateTime($periodEnd))->days + 1);
-    $workingDays = max(1, hr_count_weekdays($periodStart, $periodEnd));
+    $schedule = hr_schedule_summary($periodStart, $periodEnd);
+    $workingDays = max(1, $schedule['days']);
     $leaveSummary = hr_get_leave_summary($pdo, $periodStart, $periodEnd);
-
-    $standardWorkMinutesPerDay = 420; // 08.00-12.00 + 14.00-17.00 = 7 jam kerja efektif.
 
     foreach ($rows as &$row) {
         $employeeId = (int)$row['employee_id'];
@@ -429,11 +564,12 @@ function hr_build_analytics(PDO $pdo, array $source = [])
             'official_duty_days' => 0,
         ];
 
-        $presentDays = hr_to_int($row['present_days']);
+        $presentDays = hr_to_float($row['present_days']);
         $absentDays = hr_to_int($row['absent_days']);
         $lateDays = hr_to_int($row['late_days']);
         $earlyLeaveDays = hr_to_int($row['early_leave_days']);
         $workMinutes = hr_to_int($row['total_work_minutes']);
+        $overtimeDays = hr_to_int($row['overtime_days']);
         $overtimeMinutes = hr_to_int($row['total_overtime_minutes']);
 
         $approvedLeaveDays = min($workingDays, hr_to_int($leave['approved_leave_days']));
@@ -443,7 +579,7 @@ function hr_build_analytics(PDO $pdo, array $source = [])
 
         $effectiveWorkDays = max(0, $workingDays - $approvedLeaveDays);
         $attendanceTargetDays = max(1, $effectiveWorkDays);
-        $expectedWorkMinutes = max(1, $effectiveWorkDays * $standardWorkMinutesPerDay);
+        $expectedWorkMinutes = max(1, $schedule['minutes'] - ($approvedLeaveDays * 480));
 
         $attendanceRate = $effectiveWorkDays > 0 ? min(100, ($presentDays / $attendanceTargetDays) * 100) : 100;
         $workRate = $effectiveWorkDays > 0 ? min(120, ($workMinutes / $expectedWorkMinutes) * 100) : 100;
@@ -469,6 +605,23 @@ function hr_build_analytics(PDO $pdo, array $source = [])
         }
 
         $score = max(0, min(100, round($score, 1)));
+        $isLoyalAndDedicated = $presentDays > 0
+            && $absentDays === 0
+            && $overtimeMinutes > (hr_to_int($row['late_minutes']) + hr_to_int($row['early_leave_minutes']));
+        $issueMinutes = hr_to_int($row['late_minutes']) + hr_to_int($row['early_leave_minutes']);
+        $isGoodContributor = $presentDays > 0
+            && $absentDays === 0
+            && $overtimeMinutes > 0
+            && (
+                $overtimeDays > max($lateDays, $earlyLeaveDays)
+                || ($issueMinutes > 0 && $overtimeMinutes >= ($issueMinutes * 0.75))
+            );
+
+        if ($isLoyalAndDedicated) {
+            $score = max(90, $score);
+        } elseif ($isGoodContributor) {
+            $score = max(70, $score);
+        }
 
         $row['period_days'] = $periodDays;
         $row['working_days'] = $workingDays;
@@ -477,16 +630,37 @@ function hr_build_analytics(PDO $pdo, array $source = [])
         $row['attendance_rate'] = round($attendanceRate, 1);
         $row['work_rate'] = round($workRate, 1);
         $row['discipline_rate'] = round($disciplineRate, 1);
+        $row['overtime_score'] = round($overtimeScore, 1);
+        $row['leave_score'] = round($leaveScore, 1);
         $row['approved_leave_days'] = $approvedLeaveDays;
         $row['paid_leave_days'] = $paidLeaveDays;
         $row['unpaid_leave_days'] = $unpaidLeaveDays;
         $row['official_duty_days'] = $officialDutyDays;
         $row['score'] = $score;
+        $row['is_loyal_and_dedicated'] = $isLoyalAndDedicated;
+        $row['is_good_contributor'] = $isGoodContributor;
 
-        if ($effectiveWorkDays <= 0 && $approvedLeaveDays > 0) {
+        $meetingFacts = [];
+        if (hr_to_int($row['early_arrival_days'] ?? 0) > 0) $meetingFacts[] = 'datang lebih awal ' . hr_to_int($row['early_arrival_days']) . 'x';
+        if ($lateDays > 0) $meetingFacts[] = 'telat ' . $lateDays . 'x (' . hr_minutes_to_text($row['late_minutes']) . ')';
+        if ($earlyLeaveDays > 0) $meetingFacts[] = 'pulang awal ' . $earlyLeaveDays . 'x (' . hr_minutes_to_text($row['early_leave_minutes']) . ')';
+        if ($absentDays > 0) $meetingFacts[] = 'alpha ' . $absentDays . ' hari';
+        $meetingFacts[] = 'kehadiran ' . hr_number($attendanceRate, 1) . '%';
+        if ($overtimeMinutes > 0) $meetingFacts[] = 'lembur ' . $overtimeDays . 'x (' . hr_decimal_hours($overtimeMinutes) . ' jam)';
+        $meetingSummary = ucfirst(implode(', ', $meetingFacts)) . '.';
+
+        if ($isLoyalAndDedicated) {
+            $row['evaluation_note'] = 'Sangat baik';
+            $row['evaluation_class'] = 'success';
+            $row['meeting_note'] = 'Loyal & berdedikasi — durasi lembur melampaui total waktu telat dan pulang awal. ' . $meetingSummary;
+        } elseif ($isGoodContributor) {
+            $row['evaluation_note'] = 'Baik';
+            $row['evaluation_class'] = 'primary';
+            $row['meeting_note'] = 'Kontribusi lembur menyeimbangkan catatan kedisiplinan. ' . $meetingSummary;
+        } elseif ($effectiveWorkDays <= 0 && $approvedLeaveDays > 0) {
             $row['evaluation_note'] = 'Cuti/Dinas';
             $row['evaluation_class'] = 'primary';
-            $row['meeting_note'] = 'Periode ini didominasi pengajuan approved, tidak perlu dibandingkan penuh.';
+            $row['meeting_note'] = 'Periode didominasi cuti/dinas approved. ' . $meetingSummary;
         } elseif ($presentDays <= 0 && $workMinutes <= 0 && $approvedLeaveDays <= 0) {
             $row['evaluation_note'] = 'Belum ada data';
             $row['evaluation_class'] = 'secondary';
@@ -494,19 +668,19 @@ function hr_build_analytics(PDO $pdo, array $source = [])
         } elseif ($absentDays >= 2 || $score < 55) {
             $row['evaluation_note'] = 'Perlu evaluasi';
             $row['evaluation_class'] = 'danger';
-            $row['meeting_note'] = 'Bahas penyebab ketidakhadiran, jam kerja rendah, atau masalah disiplin.';
+            $row['meeting_note'] = $meetingSummary;
         } elseif ($lateDays >= 3 || $earlyLeaveDays >= 3 || $score < 70) {
             $row['evaluation_note'] = 'Perlu perhatian';
             $row['evaluation_class'] = 'warning';
-            $row['meeting_note'] = 'Evaluasi kedisiplinan dan konsistensi jam kerja.';
+            $row['meeting_note'] = $meetingSummary;
         } elseif ($score >= 90 && $lateDays === 0 && $absentDays === 0) {
             $row['evaluation_note'] = 'Sangat baik';
             $row['evaluation_class'] = 'success';
-            $row['meeting_note'] = 'Dapat dijadikan contoh kedisiplinan dan konsistensi kerja.';
+            $row['meeting_note'] = $meetingSummary;
         } else {
             $row['evaluation_note'] = 'Baik';
             $row['evaluation_class'] = 'primary';
-            $row['meeting_note'] = 'Pertahankan performa dan monitoring rutin.';
+            $row['meeting_note'] = $meetingSummary;
         }
     }
     unset($row);
@@ -556,7 +730,7 @@ function hr_build_analytics(PDO $pdo, array $source = [])
     $attendanceRateTotal = 0;
 
     foreach ($rows as $row) {
-        $summary['present_days'] += hr_to_int($row['present_days']);
+        $summary['present_days'] += hr_to_float($row['present_days']);
         $summary['absent_days'] += hr_to_int($row['absent_days']);
         $summary['late_days'] += hr_to_int($row['late_days']);
         $summary['early_leave_days'] += hr_to_int($row['early_leave_days']);
@@ -593,6 +767,57 @@ function hr_build_analytics(PDO $pdo, array $source = [])
     usort($needReview, fn($a, $b) => hr_to_float($a['score']) <=> hr_to_float($b['score']));
     $needReview = array_slice($needReview, 0, 7);
 
+    // Perbandingan perilaku kerja hanya memakai karyawan yang memiliki data
+    // absensi pada periode terpilih agar nilai nol karena "belum ada data"
+    // tidak keliru dianggap sebagai pencapaian terbaik.
+    $comparisonRows = array_values(array_filter($rows, fn($r) => hr_to_int($r['attendance_rows'] ?? 0) > 0));
+    $takeComparison = static function (array $source, callable $sort): array {
+        usort($source, $sort);
+        return array_slice($source, 0, 5);
+    };
+
+    $mostEarlyArrival = $takeComparison($comparisonRows, fn($a, $b) =>
+        (hr_to_int($b['early_arrival_days'] ?? 0) <=> hr_to_int($a['early_arrival_days'] ?? 0))
+        ?: (hr_to_float($b['score']) <=> hr_to_float($a['score']))
+    );
+    $leastEarlyArrival = $takeComparison($comparisonRows, fn($a, $b) =>
+        (hr_to_int($a['early_arrival_days'] ?? 0) <=> hr_to_int($b['early_arrival_days'] ?? 0))
+        ?: (hr_to_float($a['score']) <=> hr_to_float($b['score']))
+    );
+    $bestNoEarlyLeave = $takeComparison($comparisonRows, fn($a, $b) =>
+        (hr_to_int($a['early_leave_days'] ?? 0) <=> hr_to_int($b['early_leave_days'] ?? 0))
+        ?: (hr_to_int($a['early_leave_minutes'] ?? 0) <=> hr_to_int($b['early_leave_minutes'] ?? 0))
+        ?: (hr_to_float($b['score']) <=> hr_to_float($a['score']))
+    );
+    $mostEarlyLeave = $takeComparison($comparisonRows, fn($a, $b) =>
+        (hr_to_int($b['early_leave_days'] ?? 0) <=> hr_to_int($a['early_leave_days'] ?? 0))
+        ?: (hr_to_int($b['early_leave_minutes'] ?? 0) <=> hr_to_int($a['early_leave_minutes'] ?? 0))
+    );
+    $leastLeave = $takeComparison($comparisonRows, fn($a, $b) =>
+        (hr_to_int($a['approved_leave_days'] ?? 0) <=> hr_to_int($b['approved_leave_days'] ?? 0))
+        ?: (hr_to_float($b['score']) <=> hr_to_float($a['score']))
+    );
+    $mostLeave = $takeComparison($comparisonRows, fn($a, $b) =>
+        (hr_to_int($b['approved_leave_days'] ?? 0) <=> hr_to_int($a['approved_leave_days'] ?? 0))
+        ?: (hr_to_float($a['score']) <=> hr_to_float($b['score']))
+    );
+    $mostOvertime = $takeComparison($comparisonRows, fn($a, $b) =>
+        (hr_to_int($b['total_overtime_minutes'] ?? 0) <=> hr_to_int($a['total_overtime_minutes'] ?? 0))
+        ?: (hr_to_float($b['score']) <=> hr_to_float($a['score']))
+    );
+    $leastOvertime = $takeComparison($comparisonRows, fn($a, $b) =>
+        (hr_to_int($a['total_overtime_minutes'] ?? 0) <=> hr_to_int($b['total_overtime_minutes'] ?? 0))
+        ?: (hr_to_float($a['score']) <=> hr_to_float($b['score']))
+    );
+    $rewardCandidates = array_values(array_filter($rows, fn($r) =>
+        hr_to_float($r['score']) >= 90
+        && hr_to_int($r['absent_days']) === 0
+        && hr_to_int($r['early_leave_days']) === 0
+        && hr_to_int($r['attendance_rows'] ?? 0) > 0
+    ));
+    usort($rewardCandidates, fn($a, $b) => hr_to_float($b['score']) <=> hr_to_float($a['score']));
+    $rewardCandidates = array_slice($rewardCandidates, 0, 5);
+
     return [
         'periodType' => $periodType,
         'periodStart' => $periodStart,
@@ -610,6 +835,15 @@ function hr_build_analytics(PDO $pdo, array $source = [])
         'topOvertime' => $topOvertime,
         'topLate' => $topLate,
         'needReview' => $needReview,
+        'mostEarlyArrival' => $mostEarlyArrival,
+        'leastEarlyArrival' => $leastEarlyArrival,
+        'bestNoEarlyLeave' => $bestNoEarlyLeave,
+        'mostEarlyLeave' => $mostEarlyLeave,
+        'leastLeave' => $leastLeave,
+        'mostLeave' => $mostLeave,
+        'mostOvertime' => $mostOvertime,
+        'leastOvertime' => $leastOvertime,
+        'rewardCandidates' => $rewardCandidates,
         'errorMessage' => $errorMessage,
     ];
 }

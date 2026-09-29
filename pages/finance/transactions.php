@@ -28,8 +28,14 @@ if ($source !== '') {
 }
 
 if ($q !== '') {
-    $where[] = "(t.transaction_code LIKE :q OR t.description LIKE :q OR c.category_name LIKE :q OR p.project_name LIKE :q)";
-    $params[':q'] = '%' . $q . '%';
+    $where[] = "(t.transaction_code LIKE :q_code OR t.reference_code LIKE :q_reference OR t.transaction_name LIKE :q_name OR t.description LIKE :q_description OR c.category_name LIKE :q_category OR p.project_name LIKE :q_project)";
+    $searchValue = '%' . $q . '%';
+    $params[':q_code'] = $searchValue;
+    $params[':q_reference'] = $searchValue;
+    $params[':q_name'] = $searchValue;
+    $params[':q_description'] = $searchValue;
+    $params[':q_category'] = $searchValue;
+    $params[':q_project'] = $searchValue;
 }
 
 $whereSql = 'WHERE ' . implode(' AND ', $where);
@@ -128,7 +134,7 @@ require_once __DIR__ . '/../../includes/sidebar.php';
                     <?php endforeach; ?>
                 </select>
             </div>
-            <div class="col-lg-3 col-md-6"><input type="text" name="q" class="form-control" value="<?= f_e($q); ?>" placeholder="Cari kode, deskripsi, kategori, project..."></div>
+            <div class="col-lg-3 col-md-6"><input type="text" name="q" class="form-control" value="<?= f_e($q); ?>" placeholder="Cari referensi, kode sistem, deskripsi..."></div>
             <div class="col-lg-1 col-md-2 d-grid"><button class="btn btn-outline-success"><i class="bi bi-search"></i></button></div>
         </form>
     </div>
@@ -141,6 +147,7 @@ require_once __DIR__ . '/../../includes/sidebar.php';
                         <th>Tanggal</th>
                         <th>Kode</th>
                         <th>Jenis</th>
+                        <th>Nama Transaksi</th>
                         <th>Kategori</th>
                         <th>Akun</th>
                         <th>Project</th>
@@ -155,17 +162,22 @@ require_once __DIR__ . '/../../includes/sidebar.php';
                     <?php foreach ($transactions as $t): ?>
                         <tr>
                             <td><?= date('d M Y', strtotime($t['transaction_date'])); ?></td>
-                            <td><div class="fw-semibold"><?= f_e($t['transaction_code']); ?></div><small class="text-muted"><?= f_e($t['reference_code'] ?: '-'); ?></small></td>
+                            <td>
+                                <div class="fw-semibold"><?= f_e($t['reference_code'] ?: '-'); ?></div>
+                                <small class="text-muted">Sistem: <?= f_e($t['transaction_code']); ?></small>
+                            </td>
                             <td><?= f_type_badge($t['type']); ?></td>
+                            <td><div class="fw-semibold"><?=f_e($t['transaction_name'] ?: $t['description'] ?: '-');?></div><small class="text-muted"><?=f_e(mb_strimwidth($t['description'] ?: '-',0,55,'...'));?></small></td>
                             <td><?= f_e($t['category_name'] ?: '-'); ?></td>
                             <td><?= f_e($t['account_name'] ?: '-'); ?></td>
                             <td><?= f_e($t['project_name'] ?: '-'); ?></td>
                             <td><?= f_e(f_source_label($t['source_module'])); ?></td>
-                            <td style="min-width:240px"><?= f_e(mb_strimwidth($t['description'] ?: '-', 0, 80, '...')); ?></td>
+                            <td style="min-width:200px"><?= f_e(mb_strimwidth($t['description'] ?: '-', 0, 80, '...')); ?></td>
                             <td class="text-end fw-bold <?= $t['type'] === 'income' ? 'text-success' : 'text-danger'; ?>">
                                 <?= $t['type'] === 'income' ? '+' : '-'; ?> <?= rupiah($t['amount']); ?>
                             </td>
                             <td class="text-end">
+                                <a href="<?= base_url('pages/finance/transaction_detail.php?id=' . $t['id']); ?>" class="btn btn-sm btn-outline-success">Detail</a>
                                 <?php if ($t['source_module'] === 'manual'): ?>
                                     <div class="btn-group">
                                         <a href="<?= base_url('pages/finance/transaction_edit.php?id=' . $t['id']); ?>" class="btn btn-sm btn-outline-secondary">Edit</a>
@@ -178,7 +190,7 @@ require_once __DIR__ . '/../../includes/sidebar.php';
                         </tr>
                     <?php endforeach; ?>
                 <?php else: ?>
-                    <tr><td colspan="10" class="text-center text-muted py-5">Belum ada transaksi.</td></tr>
+                    <tr><td colspan="11" class="text-center text-muted py-5">Belum ada transaksi.</td></tr>
                 <?php endif; ?>
                 </tbody>
             </table>

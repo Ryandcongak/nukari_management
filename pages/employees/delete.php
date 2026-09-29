@@ -45,5 +45,7 @@ try {
         redirect('pages/employees/index.php?success=inactive');
     }
 } catch (Exception $e) {
-    die('Gagal memproses data karyawan: ' . htmlspecialchars($e->getMessage()));
+    error_log('Employee delete/deactivate failed: ' . $e->getMessage());
+    $_SESSION['error'] = 'Gagal memproses data karyawan. Periksa apakah data masih digunakan oleh modul lain.';
+    redirect('pages/employees/index.php');
 }

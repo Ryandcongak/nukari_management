@@ -15,7 +15,7 @@ if (!function_exists('asset_pct')) {
 if (!function_exists('asset_table_exists')) {
     function asset_table_exists(PDO $pdo, $table) {
         try {
-            $stmt = $pdo->prepare("SHOW TABLES LIKE :table_name");
+            $stmt = $pdo->prepare("SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = DATABASE() AND table_name = :table_name");
             $stmt->execute([':table_name' => $table]);
             return (bool)$stmt->fetchColumn();
         } catch (Throwable $e) {
@@ -116,6 +116,20 @@ $rentals = asset_table_exists($pdo, 'asset_rental_payments') ? asset_safe_query(
     LIMIT 20
 ") : [];
 
+$profitability = asset_safe_query($pdo, "
+    SELECT a.id, a.asset_code, a.asset_name, a.purchase_price,
+           COALESCE(r.rental_income,0) rental_income,
+           COALESCE(m.maintenance_cost,0) maintenance_cost,
+           COALESCE(s.sale_income,0) sale_income,
+           COALESCE(r.rental_income,0) + COALESCE(s.sale_income,0) - COALESCE(m.maintenance_cost,0) - COALESCE(a.purchase_price,0) net_result
+    FROM assets a
+    LEFT JOIN (SELECT asset_id, SUM(amount) rental_income FROM asset_rental_payments GROUP BY asset_id) r ON r.asset_id=a.id
+    LEFT JOIN (SELECT asset_id, SUM(cost) maintenance_cost FROM asset_maintenance GROUP BY asset_id) m ON m.asset_id=a.id
+    LEFT JOIN (SELECT asset_id, SUM(sale_price) sale_income FROM asset_sales GROUP BY asset_id) s ON s.asset_id=a.id
+    WHERE COALESCE(r.rental_income,0) > 0 OR COALESCE(m.maintenance_cost,0) > 0 OR COALESCE(s.sale_income,0) > 0
+    ORDER BY net_result DESC, a.asset_name
+");
+
 $depreciation = asset_safe_query($pdo, "
     SELECT id, asset_code, asset_name, purchase_price, current_value, residual_value, useful_life_months, purchase_date,
            GREATEST(COALESCE(purchase_price,0) - COALESCE(current_value,0),0) depreciation_value
@@ -166,6 +180,8 @@ require_once __DIR__ . '/../../includes/sidebar.php';
         <div class="col-md-6 col-xl-2"><div class="asset-card asset-kpi"><div class="label">Maintenance</div><div class="value"><?= (int)$summary['maintenance_assets']; ?></div><div class="sub">Butuh perhatian teknis.</div></div></div>
         <div class="col-md-6 col-xl-2"><div class="asset-card asset-kpi"><div class="label">Overdue</div><div class="value"><?= (int)($reminderSummary['overdue_total'] ?? 0); ?></div><div class="sub">Reminder lewat tempo.</div></div></div>
     </div>
+
+    <div class="asset-card mb-3"><h5 class="report-section-title">Profitabilitas Aset</h5><?php if(!$profitability): ?><div class="empty-state">Belum ada transaksi sewa, maintenance, atau penjualan aset.</div><?php else: ?><div class="table-responsive"><table class="table table-sm"><thead><tr><th>Aset</th><th class="text-end">Harga Beli</th><th class="text-end">Pendapatan Sewa</th><th class="text-end">Biaya Maintenance</th><th class="text-end">Penjualan</th><th class="text-end">Hasil Lifecycle</th></tr></thead><tbody><?php foreach($profitability as $row): ?><tr><td><strong><?= h($row['asset_code'] ?: '-'); ?></strong><div class="small text-muted"><?= h($row['asset_name']); ?></div></td><td class="text-end"><?= rupiah($row['purchase_price']); ?></td><td class="text-end text-success"><?= rupiah($row['rental_income']); ?></td><td class="text-end text-danger"><?= rupiah($row['maintenance_cost']); ?></td><td class="text-end text-success"><?= rupiah($row['sale_income']); ?></td><td class="text-end fw-bold <?= $row['net_result']>=0?'text-success':'text-danger'; ?>"><?= rupiah($row['net_result']); ?></td></tr><?php endforeach; ?></tbody></table></div><?php endif; ?></div>
 
     <div class="row g-3 mb-3">
         <div class="col-lg-6"><div class="asset-card"><h5 class="report-section-title">Komposisi Nilai per Kategori</h5><?php if(!$byCategory): ?><div class="empty-state">Belum ada data kategori aset.</div><?php else: ?><?php foreach($byCategory as $r): $pct=asset_pct($r['value_sum'],$totalValue); ?><div class="chart-row"><div class="name"><?= h($r['category']); ?> <span class="text-muted">(<?= (int)$r['total']; ?>)</span></div><div class="mini-bar"><span style="width:<?= $pct; ?>%"></span></div><div class="amount"><?= rupiah($r['value_sum']); ?></div></div><?php endforeach; ?><?php endif; ?></div></div>

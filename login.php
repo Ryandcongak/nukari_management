@@ -1,8 +1,14 @@
 <?php
+require_once __DIR__ . '/includes/functions.php';
+ini_set('session.use_strict_mode', '1');
+ini_set('session.use_only_cookies', '1');
+ini_set('session.cookie_httponly', '1');
+ini_set('session.cookie_samesite', 'Lax');
+ini_set('session.cookie_secure', request_is_https() ? '1' : '0');
 session_start();
+send_security_headers();
 
 require_once __DIR__ . '/config/database.php';
-require_once __DIR__ . '/includes/functions.php';
 
 $error = '';
 
@@ -14,9 +20,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     if ($username === '' || $password === '') {
         $error = 'Username dan password wajib diisi.';
     } else {
-        $stmt = $pdo->prepare("SELECT * FROM users WHERE username = :username OR email = :username LIMIT 1");
+        $stmt = $pdo->prepare("SELECT * FROM users WHERE username = :username OR email = :email LIMIT 1");
         $stmt->execute([
-            ':username' => $username
+            ':username' => $username,
+            ':email' => $username
         ]);
 
         $user = $stmt->fetch(PDO::FETCH_ASSOC);
@@ -58,7 +65,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         body {
             min-height: 100vh;
             background: linear-gradient(135deg, #0f3d2e 0%, #1f7a4d 45%, #f4f7f5 45%, #f4f7f5 100%);
-            font-family: Arial, sans-serif;
+            font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Helvetica Neue", Arial, sans-serif;
         }
 
         .login-wrapper {

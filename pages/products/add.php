@@ -1,6 +1,7 @@
 <?php
 require_once __DIR__ . '/../../includes/auth.php';
 require_once __DIR__ . '/product_helpers.php';
+require_once __DIR__ . '/../../includes/master_data_helper.php';
 
 $pageTitle='Tambah Produk - Nukari';
 
@@ -26,15 +27,15 @@ function product_upload_photo($field = 'photo') {
 if($_SERVER['REQUEST_METHOD']==='POST'){
     $code = trim($_POST['product_code']??'') ?: product_code('PRD');
     $barcode = trim($_POST['barcode_code'] ?? '') ?: $code;
-    $hpp = product_parse_number($_POST['hpp_price']??0);
+    $basePrice = product_parse_number($_POST['base_price']??0);
     $sell = product_parse_number($_POST['selling_price']??0);
     $stock = product_parse_number($_POST['stock']??0);
     $minStock = product_parse_number($_POST['minimum_stock']??0);
     $photo = product_upload_photo('photo');
 
     $stmt=$pdo->prepare("INSERT INTO products
-        (product_code,barcode_code,barcode_type,product_name,category,product_type,description,production_cost,hpp_price,selling_price,profit_estimate,stock,unit,minimum_stock,photo,marketplace_tokopedia,marketplace_shopee,contribution_percent,contribution_program_name,contribution_event_name,contribution_event_date,status,created_at)
-        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,NOW())");
+        (product_code,barcode_code,barcode_type,product_name,category,product_type,description,base_price,track_stock,production_cost,hpp_price,selling_price,profit_estimate,stock,unit,minimum_stock,photo,marketplace_tokopedia,marketplace_shopee,contribution_percent,contribution_program_name,contribution_event_name,contribution_event_date,status,created_at)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,NOW())");
     $stmt->execute([
         $code,
         $barcode,
@@ -43,10 +44,12 @@ if($_SERVER['REQUEST_METHOD']==='POST'){
         trim($_POST['category']??''),
         $_POST['product_type']??'recycle',
         trim($_POST['description']??''),
-        $hpp,
-        $hpp,
+        $basePrice,
+        isset($_POST['track_stock']) ? 1 : 0,
+        $basePrice,
+        $basePrice,
         $sell,
-        $sell-$hpp,
+        $sell-$basePrice,
         $stock,
         trim($_POST['unit']??'pcs'),
         $minStock,
@@ -83,7 +86,7 @@ require_once __DIR__.'/_style.php';
         <div class="form-card-head">
             <div>
                 <h5>Tambah Produk Jadi</h5>
-                <div class="text-muted small">Lengkapi produk recycle, eco enzyme, custom, atau service.</div>
+                <div class="text-muted small">Lengkapi produk recycle, eco enzyme, pupuk, atau jenis produk Nukari lainnya.</div>
             </div>
             <a href="index.php" class="btn btn-outline-secondary btn-rounded">Kembali</a>
         </div>
@@ -103,19 +106,13 @@ require_once __DIR__.'/_style.php';
                         <div class="col-md-4"><label class="form-label">Kode Barcode</label><input name="barcode_code" class="form-control" placeholder="Otomatis mengikuti kode produk"><div class="input-hint">Kode ini yang akan discan kasir/bazar.</div></div>
                         <div class="col-md-4"><label class="form-label">Nama Produk *</label><input name="product_name" class="form-control" required></div>
                         <div class="col-md-4"><label class="form-label">Kategori</label><input name="category" class="form-control" placeholder="Kerajinan, Eco Enzyme, dll"></div>
-                        <div class="col-md-4"><label class="form-label">Tipe Produk</label><select name="product_type" class="form-select"><option value="recycle">Recycle</option><option value="eco_enzyme">Eco Enzyme</option><option value="custom">Custom</option><option value="service">Service</option><option value="other">Other</option></select></div>
                         <div class="col-md-4"><label class="form-label">Status</label><select name="status" class="form-select"><option value="active">Active</option><option value="inactive">Inactive</option></select></div>
                         <div class="col-md-3"><label class="form-label">Stok Awal</label><input name="stock" class="form-control qty-input" value="0"></div>
-                        <div class="col-md-3"><label class="form-label">Satuan</label><input name="unit" class="form-control" value="pcs"></div>
+                        <div class="col-md-3"><label class="form-label">Satuan</label><input name="unit" class="form-control" list="productUnitList" value="pcs"><?= master_datalist($pdo,'unit','productUnitList'); ?></div>
                         <div class="col-md-3"><label class="form-label">Minimum Stok</label><input name="minimum_stock" class="form-control qty-input" value="0"></div>
-                        <div class="col-md-3"><label class="form-label">HPP / Unit</label><input name="hpp_price" class="form-control money-input" value="0"></div>
+                        <div class="col-md-3"><label class="form-label">Harga Dasar</label><input name="base_price" class="form-control money-input" value="0"></div>
                         <div class="col-md-4"><label class="form-label">Harga Jual</label><input name="selling_price" class="form-control money-input" value="0"></div>
-                        <div class="col-md-4"><label class="form-label">Link Tokopedia</label><input name="marketplace_tokopedia" class="form-control"></div>
-                        <div class="col-md-4"><label class="form-label">Link Shopee</label><input name="marketplace_shopee" class="form-control"></div>
-                        <div class="col-md-3"><label class="form-label">Potongan Program Sosial (%)</label><input name="contribution_percent" class="form-control qty-input" value="0"><div class="input-hint">Contoh: 5 untuk donasi 5% dari penjualan.</div></div>
-                        <div class="col-md-3"><label class="form-label">Nama Program</label><input name="contribution_program_name" class="form-control" placeholder="Penanaman Mangrove"></div>
-                        <div class="col-md-3"><label class="form-label">Nama Event</label><input name="contribution_event_name" class="form-control" placeholder="Mangrove Serangan 2027"></div>
-                        <div class="col-md-3"><label class="form-label">Tanggal Event</label><input type="date" name="contribution_event_date" class="form-control"></div>
+                        <div class="col-md-4"><label class="form-label">Kontrol Stok</label><div class="form-check form-switch mt-2"><input class="form-check-input" type="checkbox" name="track_stock" value="1" checked><label class="form-check-label">Kurangi stok saat terjual</label></div></div>
                         <div class="col-12"><label class="form-label">Deskripsi / Catatan</label><textarea name="description" class="form-control" rows="4"></textarea></div>
                         <div class="col-12 d-flex gap-2"><button class="btn btn-success btn-rounded"><i class="bi bi-save me-1"></i> Simpan</button><a href="index.php" class="btn btn-outline-secondary btn-rounded">Kembali</a></div>
                     </div>

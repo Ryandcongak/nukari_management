@@ -11,9 +11,9 @@ function nr_report(PDO $pdo, string $type, string $from, string $to): array {
     $definitions = [
         'finance' => [
             'title'=>'Laporan Keuangan', 'description'=>'Arus kas masuk dan keluar seluruh modul.',
-            'headers'=>['Tanggal','Kode','Jenis','Kategori','Akun','Proyek','Keterangan','Nominal'],
-            'sql'=>"SELECT t.transaction_date,t.transaction_code,t.type,COALESCE(c.category_name,'-') category_name,COALESCE(a.account_name,'-') account_name,COALESCE(p.project_name,'-') project_name,t.description,t.amount FROM transactions t LEFT JOIN transaction_categories c ON c.id=t.category_id LEFT JOIN finance_accounts a ON a.id=t.account_id LEFT JOIN projects p ON p.id=t.project_id WHERE t.transaction_date BETWEEN :from AND :to ORDER BY t.transaction_date DESC,t.id DESC",
-            'row'=>fn($r)=>[$r['transaction_date'],$r['transaction_code'],ucfirst($r['type']),$r['category_name'],$r['account_name'],$r['project_name'],$r['description'],nr_money($r['amount'])],
+            'headers'=>['Tanggal','Kode Referensi','Kode Sistem','Nama Transaksi','Jenis','Kategori','Akun','Proyek','Keterangan','Nominal'],
+            'sql'=>"SELECT t.transaction_date,t.reference_code,t.transaction_code,t.transaction_name,t.type,COALESCE(c.category_name,'-') category_name,COALESCE(a.account_name,'-') account_name,COALESCE(p.project_name,'-') project_name,t.description,t.amount FROM transactions t LEFT JOIN transaction_categories c ON c.id=t.category_id LEFT JOIN finance_accounts a ON a.id=t.account_id LEFT JOIN projects p ON p.id=t.project_id WHERE t.transaction_date BETWEEN :from AND :to ORDER BY t.transaction_date DESC,t.id DESC",
+            'row'=>fn($r)=>[$r['transaction_date'],$r['reference_code']?:'-',$r['transaction_code'],$r['transaction_name']?:$r['description'],ucfirst($r['type']),$r['category_name'],$r['account_name'],$r['project_name'],$r['description'],nr_money($r['amount'])],
             'summary'=>fn($rows)=>[
                 ['label'=>'Total Pemasukan','value'=>nr_money(array_sum(array_map(fn($r)=>$r['type']==='income'?(float)$r['amount']:0,$rows))),'tone'=>'success'],
                 ['label'=>'Total Pengeluaran','value'=>nr_money(array_sum(array_map(fn($r)=>$r['type']==='expense'?(float)$r['amount']:0,$rows))),'tone'=>'danger'],

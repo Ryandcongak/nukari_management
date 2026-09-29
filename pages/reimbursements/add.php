@@ -1,6 +1,10 @@
 <?php
 require_once __DIR__ . '/helpers.php';
 
+// Modul ini dipertahankan untuk penyelesaian histori. Pengajuan baru disatukan
+// ke Dana Operasional agar tidak terbentuk dua pencatatan untuk kebutuhan sama.
+redirect('pages/finance/operational_funds.php?info=Gunakan Dana Operasional untuk pengajuan baru');
+
 $pageTitle = 'Tambah Dana Talangan - Nukari';
 $error = '';
 

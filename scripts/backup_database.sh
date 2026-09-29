@@ -10,8 +10,14 @@ DB_NAME=${NUKARI_DB_NAME:-nukari_management}
 DB_USER=${NUKARI_DB_USER:-root}
 DB_PASS=${NUKARI_DB_PASS:-root}
 STAMP=$(date '+%Y%m%d_%H%M%S')
+BACKUP_FILE="$BACKUP_DIR/${DB_NAME}_${STAMP}.sql.gz"
+TEMP_FILE="$BACKUP_DIR/.${DB_NAME}_${STAMP}.sql"
 
 mkdir -p "$BACKUP_DIR"
-"$MYSQLDUMP_BIN" --host="$DB_HOST" --port="$DB_PORT" --user="$DB_USER" --password="$DB_PASS" --single-transaction --routines --triggers "$DB_NAME" | gzip > "$BACKUP_DIR/${DB_NAME}_${STAMP}.sql.gz"
+trap 'rm -f "$TEMP_FILE"' EXIT HUP INT TERM
+"$MYSQLDUMP_BIN" --host="$DB_HOST" --port="$DB_PORT" --user="$DB_USER" --password="$DB_PASS" --single-transaction --routines --triggers "$DB_NAME" > "$TEMP_FILE"
+gzip -c "$TEMP_FILE" > "$BACKUP_FILE"
+rm -f "$TEMP_FILE"
+trap - EXIT HUP INT TERM
 find "$BACKUP_DIR" -type f -name '*.sql.gz' -mtime +30 -delete
-echo "Backup tersimpan: $BACKUP_DIR/${DB_NAME}_${STAMP}.sql.gz"
+echo "Backup tersimpan: $BACKUP_FILE"

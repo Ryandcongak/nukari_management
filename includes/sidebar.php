@@ -30,8 +30,13 @@ $isProductsOpen = strpos($currentPath, 'products') !== false && !$isCashierOpen;
     <!-- ===============================
          BRAND
     ================================= -->
-    <div class="brand-title">
-        Nukari Management
+    <div class="d-flex align-items-start justify-content-between gap-3">
+        <div class="brand-title">
+            Nukari Management
+        </div>
+        <button type="button" class="sidebar-mobile-close" id="sidebarMobileClose" aria-label="Tutup menu navigasi">
+            <i class="bi bi-x-lg" aria-hidden="true"></i>
+        </button>
     </div>
     <div class="brand-subtitle">
         PT Nukari Kriya Raya
@@ -55,7 +60,7 @@ $isProductsOpen = strpos($currentPath, 'products') !== false && !$isCashierOpen;
         <div class="nav-section-title">HR & Payroll</div>
 
         <a class="nav-link <?= is_active_menu('employees', $currentPath); ?>" href="<?= base_url('pages/employees/index.php'); ?>">
-            <i class="bi bi-person-badge me-2"></i> Karyawan
+            <i class="bi bi-person-badge me-2"></i> Karyawan &amp; Internship
         </a>
 
         <a class="nav-link <?= is_active_menu('attendances', $currentPath); ?>" href="<?= base_url('pages/attendances/index.php'); ?>">
@@ -92,6 +97,9 @@ $isProductsOpen = strpos($currentPath, 'products') !== false && !$isCashierOpen;
         <a class="nav-link <?= is_active_menu('projects', $currentPath); ?>" href="<?= base_url('pages/projects/index.php'); ?>">
             <i class="bi bi-kanban me-2"></i> Project
         </a>
+        <a class="nav-link ms-3 <?= is_active_menu('projects/tracking.php', $currentPath); ?>" href="<?= base_url('pages/projects/tracking.php'); ?>">
+            <i class="bi bi-calendar3 me-2"></i> Project Tracking
+        </a>
 
 
         <a class="nav-link <?= is_active_menu('clients', $currentPath); ?>" href="<?= base_url('pages/clients/index.php'); ?>">
@@ -119,20 +127,17 @@ $isProductsOpen = strpos($currentPath, 'products') !== false && !$isCashierOpen;
             <i class="bi bi-cash-stack me-2"></i> Keuangan
         </a>
 
-        <a class="nav-link <?= is_active_menu('operational_funds', $currentPath); ?>" href="<?= base_url('pages/finance/operational_funds.php'); ?>">
-            <i class="bi bi-wallet2 me-2"></i> Dana Operasional
-        </a>
-
         <a class="nav-link <?= is_active_menu('debts', $currentPath); ?>" href="<?= base_url('pages/debts/index.php'); ?>">
-            <i class="bi bi-wallet2 me-2"></i> Hutang & Piutang
-        </a>
-
-        <a class="nav-link <?= is_active_menu('reimbursements', $currentPath); ?>" href="<?= base_url('pages/reimbursements/index.php'); ?>">
-            <i class="bi bi-receipt-cutoff me-2"></i> Dana Talangan
+            <i class="bi bi-wallet2 me-2"></i> Dana, Hutang & Piutang
         </a>
 
         <a class="nav-link <?= is_active_menu('reports', $currentPath); ?>" href="<?= base_url('pages/reports/index.php'); ?>">
             <i class="bi bi-file-earmark-bar-graph me-2"></i> Laporan
+        </a>
+
+        <div class="nav-section-title">Master Data</div>
+        <a class="nav-link <?= is_active_menu('/master/', $currentPath); ?>" href="<?= base_url('pages/master/index.php'); ?>">
+            <i class="bi bi-grid-3x3-gap me-2"></i> Master Data
         </a>
 
         <div class="nav-section-title">System</div>

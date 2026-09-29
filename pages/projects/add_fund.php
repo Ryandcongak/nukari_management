@@ -15,7 +15,7 @@ function project_fund_table_exists(PDO $pdo, string $tableName): bool
     $tableName = preg_replace('/[^a-zA-Z0-9_]/', '', $tableName);
     if ($tableName === '') return false;
     try {
-        $stmt = $pdo->prepare("SHOW TABLES LIKE :table_name");
+        $stmt = $pdo->prepare("SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = DATABASE() AND table_name = :table_name");
         $stmt->execute([':table_name' => $tableName]);
         return (bool) $stmt->fetchColumn();
     } catch (Throwable $e) {
@@ -25,8 +25,7 @@ function project_fund_table_exists(PDO $pdo, string $tableName): bool
 
 function ensure_project_fund_receipts_table(PDO $pdo): void
 {
-    if (project_fund_table_exists($pdo, 'project_fund_receipts')) return;
-    $pdo->exec("\n        CREATE TABLE IF NOT EXISTS project_fund_receipts (\n            id INT(11) NOT NULL AUTO_INCREMENT,\n            fund_id INT(11) NOT NULL,\n            file_path VARCHAR(255) NOT NULL,\n            caption VARCHAR(255) NULL,\n            created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,\n            PRIMARY KEY (id),\n            KEY idx_project_fund_receipts_fund_id (fund_id)\n        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci\n    ");
+    if (!project_fund_table_exists($pdo, 'project_fund_receipts')) throw new RuntimeException('Migrasi database project_fund_receipts belum dijalankan.');
 }
 
 function upload_project_fund_receipts_page($files, int $fundId, PDO $pdo): int

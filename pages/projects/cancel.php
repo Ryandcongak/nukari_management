@@ -7,17 +7,18 @@ if (!$id) {
     redirect('pages/projects/index.php');
 }
 
-$stmt = $pdo->prepare("
-    SELECT id, project_name, status 
-    FROM projects 
-    WHERE id = :id 
-    LIMIT 1
-");
+$stmt = $pdo->prepare("SELECT p.id,p.project_name,p.status,
+    COALESCE((SELECT SUM(amount) FROM project_transactions t WHERE t.project_id=p.id AND t.transaction_type='income'),0) total_income
+    FROM projects p WHERE p.id=:id LIMIT 1");
 $stmt->execute([':id' => $id]);
 $project = $stmt->fetch(PDO::FETCH_ASSOC);
 
 if (!$project) {
     redirect('pages/projects/index.php');
+}
+
+if ((float)$project['total_income'] > 0) {
+    redirect('pages/projects/index.php?error=Project yang sudah menerima pemasukan tidak dapat dibatalkan sebagai project gagal.');
 }
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {

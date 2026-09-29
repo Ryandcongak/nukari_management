@@ -1,5 +1,7 @@
 <?php
 require_once __DIR__ . '/../../includes/auth.php';
+header('Location: simple.php?info=' . urlencode('Modul Produksi sudah digantikan oleh Produk Sederhana.'));
+exit;
 require_once __DIR__ . '/product_helpers.php';
 
 $pageTitle = 'Produksi Produk - Nukari';
@@ -301,6 +303,7 @@ require_once __DIR__ . '/_style.php';
                                 <select name="production_type" class="form-select">
                                     <option value="recycle">Recycle</option>
                                     <option value="eco_enzyme">Eco Enzyme</option>
+                                    <option value="fertilizer">Pupuk</option>
                                     <option value="custom">Custom</option>
                                     <option value="other">Lainnya</option>
                                 </select>
@@ -386,7 +389,7 @@ require_once __DIR__ . '/_style.php';
                             <div class="col-lg-3">
                                 <select name="type" class="form-select">
                                     <option value="">Semua Tipe</option>
-                                    <?php foreach (['recycle'=>'Recycle','eco_enzyme'=>'Eco Enzyme','custom'=>'Custom','other'=>'Lainnya'] as $val=>$label): ?>
+                                    <?php foreach (['recycle'=>'Recycle','eco_enzyme'=>'Eco Enzyme','fertilizer'=>'Pupuk','custom'=>'Custom','other'=>'Lainnya'] as $val=>$label): ?>
                                         <option value="<?= $val; ?>" <?= $typeFilter===$val?'selected':''; ?>><?= $label; ?></option>
                                     <?php endforeach; ?>
                                 </select>

@@ -64,19 +64,7 @@ function calculate_leave_days($startDate, $endDate)
         return 1;
     }
 
-    $days = 0;
-    while ($start <= $end) {
-        $day = (int)date('N', $start);
-
-        // Sabtu & Minggu tidak dihitung
-        if (!in_array($day, [6, 7])) {
-            $days++;
-        }
-
-        $start = strtotime('+1 day', $start);
-    }
-
-    return max(1, $days);
+    return (int)floor(($end - $start) / 86400) + 1;
 }
 
 $employeeStmt = $pdo->query("
@@ -295,14 +283,20 @@ $params[':period_end'] = $periodEnd;
 
 if ($keyword !== '') {
     $where[] = "(
-        e.full_name LIKE :keyword
-        OR e.employee_code LIKE :keyword
-        OR e.position LIKE :keyword
-        OR e.department LIKE :keyword
-        OR el.reason LIKE :keyword
-        OR el.approval_notes LIKE :keyword
+        e.full_name LIKE :keyword_name
+        OR e.employee_code LIKE :keyword_code
+        OR e.position LIKE :keyword_position
+        OR e.department LIKE :keyword_department
+        OR el.reason LIKE :keyword_reason
+        OR el.approval_notes LIKE :keyword_approval
     )";
-    $params[':keyword'] = '%' . $keyword . '%';
+    $keywordValue = '%' . $keyword . '%';
+    $params[':keyword_name'] = $keywordValue;
+    $params[':keyword_code'] = $keywordValue;
+    $params[':keyword_position'] = $keywordValue;
+    $params[':keyword_department'] = $keywordValue;
+    $params[':keyword_reason'] = $keywordValue;
+    $params[':keyword_approval'] = $keywordValue;
 }
 
 if ($statusFilter !== '') {

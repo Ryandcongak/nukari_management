@@ -21,8 +21,8 @@ function dashboard_table_exists(PDO $pdo, string $table): bool
     }
 
     try {
-        $stmt = $pdo->prepare("SHOW TABLES LIKE ?");
-        $stmt->execute([$table]);
+        $stmt = $pdo->prepare("SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = DATABASE() AND table_name = :table_name");
+        $stmt->execute([':table_name' => $table]);
         return $cache[$table] = (bool) $stmt->fetchColumn();
     } catch (Throwable $e) {
         return $cache[$table] = false;
@@ -38,8 +38,8 @@ function dashboard_column_exists(PDO $pdo, string $table, string $column): bool
     }
 
     try {
-        $stmt = $pdo->prepare("SHOW COLUMNS FROM `$table` LIKE ?");
-        $stmt->execute([$column]);
+        $stmt = $pdo->prepare("SELECT COUNT(*) FROM information_schema.columns WHERE table_schema = DATABASE() AND table_name = :table_name AND column_name = :column_name");
+        $stmt->execute([':table_name' => $table, ':column_name' => $column]);
         return $cache[$key] = (bool) $stmt->fetchColumn();
     } catch (Throwable $e) {
         return $cache[$key] = false;
@@ -139,10 +139,18 @@ $totalMaterials = dashboard_table_exists($pdo, 'raw_materials') ? dashboard_scal
 
 $todayAttendance = 0;
 $todayLate = 0;
+$todayIncomplete = 0;
 if (dashboard_table_exists($pdo, 'attendances') && dashboard_column_exists($pdo, 'attendances', 'attendance_date')) {
-    $todayAttendance = dashboard_scalar($pdo, "SELECT COUNT(*) FROM attendances WHERE attendance_date = CURDATE()");
+    if (dashboard_column_exists($pdo, 'attendances', 'attendance_day_value')) {
+        $todayAttendance = dashboard_scalar($pdo, "SELECT COALESCE(SUM(attendance_day_value),0) FROM attendances WHERE attendance_date = CURDATE()");
+    } else {
+        $todayAttendance = dashboard_scalar($pdo, "SELECT COUNT(*) FROM attendances WHERE attendance_date = CURDATE() AND status IN ('present','late')");
+    }
     if (dashboard_column_exists($pdo, 'attendances', 'status')) {
         $todayLate = dashboard_scalar($pdo, "SELECT COUNT(*) FROM attendances WHERE attendance_date = CURDATE() AND status = 'late'");
+    }
+    if (dashboard_column_exists($pdo, 'attendances', 'check_in') && dashboard_column_exists($pdo, 'attendances', 'check_out')) {
+        $todayIncomplete = dashboard_scalar($pdo, "SELECT COUNT(*) FROM attendances WHERE attendance_date = CURDATE() AND ((check_in IS NULL) <> (check_out IS NULL))");
     }
 }
 
@@ -582,7 +590,8 @@ require_once __DIR__ . '/../includes/sidebar.php';
                         <div class="p-3 rounded-4 bg-light h-100">
                             <div class="small-muted">Karyawan</div>
                             <div class="fs-3 fw-bold"><?= (int) $totalEmployees; ?></div>
-                            <div class="small-muted">Hadir hari ini: <?= (int) $todayAttendance; ?></div>
+                            <div class="small-muted">Hadir hari ini: <?= rtrim(rtrim(number_format((float)$todayAttendance, 2, ',', '.'), '0'), ','); ?> hari</div>
+                            <?php if ((int)$todayIncomplete > 0): ?><div class="small text-danger">Perlu diperiksa: <?= (int)$todayIncomplete; ?></div><?php endif; ?>
                         </div>
                     </div>
                     <div class="col-sm-6 col-xl-3">

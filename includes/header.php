@@ -183,8 +183,69 @@ if (isset($pdo)) {
             --nukari-green-3: #16643e;
             --nukari-bg: #f4f7f5;
             --nukari-text: #1f2933;
+            --apple-green: #34c759;
+            --apple-green-dark: #248a3d;
+            --apple-blue: #007aff;
+            --apple-orange: #ff9500;
+            --apple-red: #ff3b30;
+            --apple-purple: #af52de;
+            --apple-teal: #5ac8fa;
+            --apple-gray-1: #8e8e93;
+            --apple-gray-2: #aeaeb2;
+            --apple-gray-5: #e5e5ea;
+            --apple-gray-6: #f2f2f7;
+            --apple-green-soft: #eaf8ef;
+            --apple-blue-soft: #eaf4ff;
+            --apple-orange-soft: #fff5e6;
+            --apple-red-soft: #fff0ef;
             --sidebar-width: 270px;
+            --apple-font: -apple-system, BlinkMacSystemFont, "SF Pro Text", "SF Pro Display", "Helvetica Neue", Arial, sans-serif;
+            --apple-mono: "SFMono-Regular", "SF Mono", ui-monospace, Menlo, Monaco, Consolas, monospace;
+            --type-caption: 12px;
+            --type-footnote: 13px;
+            --type-body: 15px;
+            --type-title-3: 20px;
+            --type-title-2: 24px;
+            --type-title-1: 28px;
+            --type-large-title: 34px;
+            --bs-body-font-family: var(--apple-font);
+            --bs-body-font-size: var(--type-body);
+            --bs-body-line-height: 1.47;
+            --bs-primary: #1f7a4d;
+            --bs-success: #34c759;
+            --bs-info: #007aff;
+            --bs-warning: #ff9500;
+            --bs-danger: #ff3b30;
+            --bs-link-color: #007aff;
+            --bs-link-hover-color: #005ecb;
         }
+
+        html { font-size: 16px; -webkit-text-size-adjust: 100%; text-rendering: optimizeLegibility; }
+        body, button, input, select, textarea, .btn, .form-control, .form-select, .table {
+            font-family: var(--apple-font);
+            -webkit-font-smoothing: antialiased;
+            -moz-osx-font-smoothing: grayscale;
+            font-kerning: normal;
+        }
+        body { font-size: var(--type-body); line-height: 1.47; letter-spacing: -0.01em; }
+        h1, h2, h3, h4, h5, h6, .display-1, .display-2, .display-3, .display-4, .display-5, .display-6 {
+            font-family: var(--apple-font); color: inherit; letter-spacing: -0.025em; line-height: 1.16;
+        }
+        h1, .h1 { font-size: var(--type-large-title); font-weight: 700; }
+        h2, .h2 { font-size: var(--type-title-1); font-weight: 700; }
+        h3, .h3 { font-size: var(--type-title-2); font-weight: 650; }
+        h4, .h4 { font-size: var(--type-title-3); font-weight: 650; }
+        h5, .h5 { font-size: 17px; font-weight: 650; letter-spacing: -0.015em; }
+        h6, .h6 { font-size: 15px; font-weight: 650; letter-spacing: -0.01em; }
+        p, li, td, .form-control, .form-select { line-height: 1.47; }
+        small, .small, .form-text { font-size: var(--type-footnote); line-height: 1.38; letter-spacing: -0.003em; }
+        label, .form-label { font-size: 13px; font-weight: 600; line-height: 1.3; letter-spacing: -0.005em; }
+        .form-control, .form-select { font-size: 15px; font-weight: 400; }
+        .btn { font-size: 14px; font-weight: 600; line-height: 1.2; letter-spacing: -0.006em; }
+        .badge { font-size: 11px; font-weight: 650; line-height: 1.2; letter-spacing: 0; }
+        .table { font-size: 14px; letter-spacing: -0.006em; }
+        .table th { font-size: 12px; font-weight: 650; letter-spacing: 0.015em; }
+        code, pre, kbd, samp, .font-monospace { font-family: var(--apple-mono); }
 
         /* =========================================
    GLOBAL LAYOUT
@@ -199,7 +260,7 @@ if (isset($pdo)) {
             overflow-x: hidden;
             overflow-y: auto;
             background: #f5f7fb;
-            font-family: 'Inter', sans-serif;
+            font-family: var(--apple-font);
         }
 
         /* =========================================
@@ -628,6 +689,52 @@ if (isset($pdo)) {
             color: #5b21b6;
         }
 
+        /* Warna semantik Apple dengan hijau Nukari tetap sebagai identitas utama. */
+        a:not(.btn):not(.nav-link) { color: var(--apple-blue); }
+        a:not(.btn):not(.nav-link):hover { color: #005ecb; }
+        .btn-nukari, .btn-primary {
+            background-color: var(--nukari-green-2);
+            border-color: var(--nukari-green-2);
+            color: #fff;
+        }
+        .btn-nukari:hover, .btn-nukari:focus, .btn-primary:hover, .btn-primary:focus {
+            background-color: var(--nukari-green-3);
+            border-color: var(--nukari-green-3);
+            color: #fff;
+        }
+        .btn-success { background-color: var(--apple-green-dark); border-color: var(--apple-green-dark); }
+        .btn-danger { background-color: var(--apple-red); border-color: var(--apple-red); }
+        .btn-warning { background-color: var(--apple-orange); border-color: var(--apple-orange); color: #1c1c1e; }
+        .btn-info { background-color: var(--apple-blue); border-color: var(--apple-blue); color: #fff; }
+        .btn-outline-success { color: var(--nukari-green-2); border-color: rgba(31,122,77,.55); }
+        .btn-outline-success:hover { color: #fff; background: var(--nukari-green-2); border-color: var(--nukari-green-2); }
+        .btn-outline-primary { color: var(--apple-blue); border-color: rgba(0,122,255,.42); }
+        .btn-outline-primary:hover { color: #fff; background: var(--apple-blue); border-color: var(--apple-blue); }
+        .btn-outline-danger { color: var(--apple-red); border-color: rgba(255,59,48,.42); }
+        .btn-outline-danger:hover { color: #fff; background: var(--apple-red); border-color: var(--apple-red); }
+        .text-success { color: var(--apple-green-dark) !important; }
+        .text-primary { color: var(--apple-blue) !important; }
+        .text-warning { color: #c66a00 !important; }
+        .text-danger { color: var(--apple-red) !important; }
+        .bg-success { background-color: var(--apple-green-dark) !important; }
+        .bg-primary { background-color: var(--apple-blue) !important; }
+        .bg-warning { background-color: var(--apple-orange) !important; }
+        .bg-danger { background-color: var(--apple-red) !important; }
+        .alert-success { color: #176b2c; background: var(--apple-green-soft); border-color: rgba(52,199,89,.28); }
+        .alert-info { color: #0059b8; background: var(--apple-blue-soft); border-color: rgba(0,122,255,.24); }
+        .alert-warning { color: #8a4b00; background: var(--apple-orange-soft); border-color: rgba(255,149,0,.28); }
+        .alert-danger { color: #b4231b; background: var(--apple-red-soft); border-color: rgba(255,59,48,.24); }
+        .badge-soft-green { background: var(--apple-green-soft); color: #176b2c; }
+        .badge-soft-blue { background: var(--apple-blue-soft); color: #0059b8; }
+        .badge-soft-orange { background: var(--apple-orange-soft); color: #8a4b00; }
+        .badge-soft-red { background: var(--apple-red-soft); color: #b4231b; }
+        .form-control:focus, .form-select:focus {
+            border-color: var(--apple-blue);
+            box-shadow: 0 0 0 .22rem rgba(0,122,255,.14);
+        }
+        .table-hover > tbody > tr:hover > * { background-color: rgba(0,122,255,.035); }
+        ::selection { background: rgba(52,199,89,.24); color: var(--nukari-text); }
+
         /* ===============================
            FOOTER CHAT READY
         ================================ */
@@ -715,11 +822,11 @@ if (isset($pdo)) {
         }
 
         @media (max-width: 767.98px) {
-            body { font-size: 14px; }
+            body { font-size: 15px; }
             .main-content { padding: 82px 12px 16px; }
             .nukari-topbar { left: 10px; right: 10px; top: 10px; min-height: 58px; padding: 8px 10px; }
             .page-header { padding: 18px; border-radius: 16px; margin-bottom: 16px; }
-            .page-header h1 { font-size: clamp(1.35rem, 7vw, 1.8rem); }
+            .page-header h1 { font-size: clamp(1.75rem, 8vw, 2.125rem); }
             .panel, .stat-card { padding: 16px; border-radius: 16px; margin-bottom: 16px; }
             .stat-number { font-size: 1.35rem; }
             .row { --bs-gutter-x: 0.9rem; }
@@ -747,6 +854,88 @@ if (isset($pdo)) {
             .d-flex.flex-wrap.gap-2 > .btn { flex: 1 1 auto; }
         }
 
+        /* Navigasi off-canvas tablet dan smartphone. Diletakkan paling akhir
+           agar tidak kalah oleh aturan sidebar lama di atas. */
+        .sidebar-backdrop,
+        .sidebar-mobile-close {
+            display: none;
+        }
+
+        @media (max-width: 991.98px) {
+            .sidebar {
+                width: min(86vw, 300px);
+                margin-left: 0;
+                transform: translateX(-105%);
+                z-index: 1045;
+                box-shadow: 18px 0 45px rgba(0, 0, 0, 0.22);
+                visibility: hidden;
+                transition: transform .25s ease, visibility .25s ease;
+                overscroll-behavior: contain;
+            }
+
+            body.sidebar-mobile-open {
+                overflow: hidden;
+            }
+
+            body.sidebar-mobile-open .sidebar {
+                margin-left: 0;
+                transform: translateX(0);
+                visibility: visible;
+            }
+
+            .sidebar-backdrop {
+                display: block;
+                position: fixed;
+                inset: 0;
+                z-index: 1040;
+                border: 0;
+                padding: 0;
+                background: rgba(15, 23, 42, .48);
+                opacity: 0;
+                visibility: hidden;
+                pointer-events: none;
+                transition: opacity .25s ease, visibility .25s ease;
+            }
+
+            body.sidebar-mobile-open .sidebar-backdrop {
+                opacity: 1;
+                visibility: visible;
+                pointer-events: auto;
+            }
+
+            .sidebar-mobile-close {
+                display: inline-flex;
+                flex: 0 0 auto;
+                width: 42px;
+                height: 42px;
+                align-items: center;
+                justify-content: center;
+                border: 1px solid rgba(255, 255, 255, .2);
+                border-radius: 12px;
+                background: rgba(255, 255, 255, .1);
+                color: #fff;
+            }
+
+            .nukari-topbar {
+                z-index: 1030;
+            }
+
+            body.sidebar-collapsed .main-content,
+            .main-content {
+                margin-left: 0;
+                width: 100%;
+            }
+        }
+
+        @media (prefers-reduced-motion: reduce) {
+            .sidebar,
+            .sidebar-backdrop,
+            .main-content,
+            .nukari-topbar {
+                transition: none !important;
+            }
+        }
+
         @media print {
             @page { size: A4 landscape; margin: 10mm; }
             body { background: #fff !important; color: #111 !important; font-size: 10pt; }
@@ -767,17 +956,50 @@ if (isset($pdo)) {
             .report-table tr { break-inside: avoid; }
             a { color: inherit !important; text-decoration: none !important; }
         }
+        .nukari-sortable-header {
+            cursor: pointer;
+            user-select: none;
+            white-space: nowrap;
+            transition: color .15s ease, background-color .15s ease;
+        }
+
+        .nukari-sortable-header:hover,
+        .nukari-sortable-header:focus-visible {
+            color: var(--nukari-green-2);
+            background-color: rgba(31, 122, 77, .06);
+            outline: none;
+        }
+
+        .nukari-sort-indicator::after {
+            content: '\2195';
+            display: inline-block;
+            margin-left: .4rem;
+            font-size: .75em;
+            opacity: .45;
+        }
+
+        .nukari-sorted-asc .nukari-sort-indicator::after {
+            content: '\2191';
+            opacity: 1;
+        }
+
+        .nukari-sorted-desc .nukari-sort-indicator::after {
+            content: '\2193';
+            opacity: 1;
+        }
     </style>
 </head>
 
 <body>
+
+    <button type="button" class="sidebar-backdrop" id="sidebarBackdrop" aria-label="Tutup menu navigasi" tabindex="-1"></button>
 
     <!-- ===============================
          TOPBAR GLOBAL
     ================================= -->
     <div class="nukari-topbar">
         <div class="d-flex align-items-center gap-2">
-            <button type="button" class="topbar-icon-btn" id="sidebarToggle" title="Tampilkan/Sembunyikan Sidebar">
+            <button type="button" class="topbar-icon-btn" id="sidebarToggle" title="Tampilkan/Sembunyikan Sidebar" aria-label="Buka menu navigasi" aria-controls="appSidebar" aria-expanded="false">
                 <i class="bi bi-list fs-4"></i>
             </button>
 

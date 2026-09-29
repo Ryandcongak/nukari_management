@@ -15,7 +15,7 @@ if (!function_exists('finance_generate_debt_code')) {
         $prefix = $type === 'receivable' ? 'PTG' : 'HTG';
         $ym = date('Ym');
 
-        $stmt = $pdo->prepare("SELECT COUNT(*) FROM debts WHERE debt_code LIKE :code");
+        $stmt = $pdo->prepare("SELECT COALESCE(MAX(CAST(SUBSTRING_INDEX(debt_code,'-',-1) AS UNSIGNED)),0) FROM debts WHERE debt_code LIKE :code");
         $stmt->execute([':code' => $prefix . '-' . $ym . '-%']);
         $num = ((int)$stmt->fetchColumn()) + 1;
 
@@ -29,7 +29,7 @@ if (!function_exists('finance_generate_transaction_code')) {
         $prefix = $type === 'income' ? 'INC' : 'EXP';
         $ymd = date('Ymd');
 
-        $stmt = $pdo->prepare("SELECT COUNT(*) FROM transactions WHERE transaction_code LIKE :code");
+        $stmt = $pdo->prepare("SELECT COALESCE(MAX(CAST(SUBSTRING_INDEX(transaction_code,'-',-1) AS UNSIGNED)),0) FROM transactions WHERE transaction_code LIKE :code");
         $stmt->execute([':code' => $prefix . '-' . $ymd . '-%']);
         $num = ((int)$stmt->fetchColumn()) + 1;
 
@@ -658,6 +658,10 @@ if (!function_exists('finance_sync_project_term_transaction')) {
             return null;
         }
 
+        $receivedAmount = isset($term['received_amount']) && (float)$term['received_amount'] > 0
+            ? (float)$term['received_amount']
+            : (float)$term['amount'];
+
         $accountId = $accountId ?: finance_get_default_account_id($pdo);
         $paymentMethod = finance_normalize_payment_method($paymentMethod ?: 'bank_transfer');
         $categoryId = finance_get_or_create_category_id($pdo, 'Pendapatan Project', 'income');
@@ -702,7 +706,7 @@ if (!function_exists('finance_sync_project_term_transaction')) {
                 ':category_id' => $categoryId,
                 ':account_id' => $accountId,
                 ':project_id' => $term['project_id'],
-                ':amount' => (float)$term['amount'],
+                ':amount' => $receivedAmount,
                 ':description' => $description,
                 ':payment_method' => $paymentMethod,
                 ':proof_file' => $proofFile,
@@ -765,7 +769,7 @@ if (!function_exists('finance_sync_project_term_transaction')) {
             ':category_id' => $categoryId,
             ':account_id' => $accountId,
             ':project_id' => $term['project_id'],
-            ':amount' => (float)$term['amount'],
+            ':amount' => $receivedAmount,
             ':description' => $description,
             ':payment_method' => $paymentMethod,
             ':proof_file' => $proofFile,
@@ -1407,9 +1411,6 @@ if (!function_exists('finance_delete_payroll_transaction_if_exists')) {
     }
 }
 
-?>
-
-<?php
 /**
  * Hapus link finance/debt/dana operasional dari satu pengeluaran project.
  * Aman untuk re-sync saat edit. Hutang yang sudah dibayar tidak dihapus.
@@ -1508,4 +1509,3 @@ if (!function_exists('finance_apply_project_expense_source')) {
         finance_upsert_project_person_debt($pdo, $sourceTable, $sourceId, $projectId, $personName, $amount, $category, $description, $transactionDate, null, $userId, $personalEmployeeId ?: null);
     }
 }
-?>

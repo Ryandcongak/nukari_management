@@ -1,5 +1,10 @@
 <?php
 require_once __DIR__ . '/../../includes/auth.php';
+require_once __DIR__ . '/../../includes/employee_funding_helper.php';
+require_once __DIR__ . '/../../includes/payroll_loan_helper.php';
+require_once __DIR__ . '/../../includes/payroll_period_helper.php';
+
+payroll_ensure_loan_policy_schema($pdo);
 
 $pageTitle = 'Pinjaman Karyawan - Nukari';
 
@@ -7,6 +12,7 @@ $error = '';
 $success = '';
 
 $month = $_GET['month'] ?? $_POST['month'] ?? date('Y-m');
+$month = preg_match('/^\d{4}-(0[1-9]|1[0-2])$/', (string)$month) ? (string)$month : date('Y-m');
 $keyword = trim($_GET['keyword'] ?? '');
 $statusFilter = $_GET['status'] ?? '';
 
@@ -61,7 +67,7 @@ function loan_period_label($year, $month)
 
 function recalculate_employee_loan(PDO $pdo, $loanId)
 {
-    $loanStmt = $pdo->prepare("SELECT loan_amount FROM employee_loans WHERE id = :id LIMIT 1");
+    $loanStmt = $pdo->prepare("SELECT loan_amount,opening_paid_amount FROM employee_loans WHERE id = :id LIMIT 1");
     $loanStmt->execute([':id' => $loanId]);
     $loan = $loanStmt->fetch(PDO::FETCH_ASSOC);
 
@@ -75,7 +81,7 @@ function recalculate_employee_loan(PDO $pdo, $loanId)
         WHERE loan_id = :loan_id
     ");
     $paidStmt->execute([':loan_id' => $loanId]);
-    $totalPaid = (float)$paidStmt->fetchColumn();
+    $totalPaid = (float)($loan['opening_paid_amount'] ?? 0) + (float)$paidStmt->fetchColumn();
 
     $loanAmount = (float)$loan['loan_amount'];
     $remaining = max(0, $loanAmount - $totalPaid);
@@ -196,16 +202,15 @@ function get_employee_period_loan_payment_total(PDO $pdo, int $employeeId, strin
 
 function get_max_loan_payment_for_period(PDO $pdo, int $employeeId, float $remainingAmount, string $period): array
 {
-    $salaryLimit = get_employee_monthly_salary_limit($pdo, $employeeId, $period);
-    $currentPeriodPayments = get_employee_period_loan_payment_total($pdo, $employeeId, $period);
-    $availableSalaryLimit = max(0, $salaryLimit - $currentPeriodPayments);
-    $maxPayment = min($remainingAmount, $availableSalaryLimit);
+    $policy = payroll_loan_limit($pdo, $employeeId, $remainingAmount, $period);
 
     return [
-        'salary_limit' => $salaryLimit,
-        'current_period_payments' => $currentPeriodPayments,
-        'available_salary_limit' => $availableSalaryLimit,
-        'max_payment' => $maxPayment
+        'salary_limit' => $policy['salary'],
+        'current_period_payments' => $policy['current_period_payments'],
+        'available_salary_limit' => $policy['available'],
+        'max_payment' => $policy['max_payment'],
+        'percent' => $policy['percent'],
+        'period_cap' => $policy['period_cap'],
     ];
 }
 
@@ -216,6 +221,7 @@ $employeeStmt = $pdo->query("
     ORDER BY full_name ASC
 ");
 $employees = $employeeStmt->fetchAll(PDO::FETCH_ASSOC);
+$fundingOptions=employee_funding_options($pdo);
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $action = $_POST['action'] ?? '';
@@ -224,6 +230,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $employeeId = (int)($_POST['employee_id'] ?? 0);
         $loanDate = $_POST['loan_date'] ?? date('Y-m-d');
         $loanAmount = normalize_loan_money($_POST['loan_amount'] ?? 0);
+        $loanOrigin = ($_POST['loan_origin'] ?? '') === 'opening_balance' ? 'opening_balance' : 'new_disbursement';
+        $openingPaidAmount = $loanOrigin === 'opening_balance' ? normalize_loan_money($_POST['opening_paid_amount'] ?? 0) : 0;
         $notes = trim($_POST['notes'] ?? '');
 
         if ($employeeId <= 0) {
@@ -232,38 +240,53 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $error = 'Tanggal pinjaman tidak valid.';
         } elseif ($loanAmount <= 0) {
             $error = 'Nominal pinjaman harus lebih dari 0.';
+        } elseif ($openingPaidAmount < 0 || $openingPaidAmount > $loanAmount) {
+            $error = 'Total pembayaran sebelum sistem harus berada antara nol dan nominal pinjaman.';
         } else {
             try {
+                $pdo->beginTransaction();
                 $stmt = $pdo->prepare("
                     INSERT INTO employee_loans (
                         employee_id,
-                        loan_date,
+                        loan_date, loan_origin,
                         loan_amount,
-                        total_paid,
+                        opening_paid_amount, opening_balance_date, total_paid,
                         remaining_amount,
                         status,
-                        notes
+                        notes,funding_source,account_id,operational_fund_id,funding_party_id,disbursement_status,payment_method,created_by
                     ) VALUES (
                         :employee_id,
-                        :loan_date,
+                        :loan_date, :loan_origin,
                         :loan_amount,
-                        0,
+                        :opening_paid_amount, :opening_balance_date, :opening_paid_amount_total,
                         :remaining_amount,
                         'active',
-                        :notes
+                        :notes,:funding_source,:account_id,:operational_fund_id,:funding_party_id,:disbursement_status,:payment_method,:created_by
                     )
                 ");
 
                 $stmt->execute([
                     ':employee_id' => $employeeId,
                     ':loan_date' => $loanDate,
+                    ':loan_origin' => $loanOrigin,
                     ':loan_amount' => $loanAmount,
-                    ':remaining_amount' => $loanAmount,
-                    ':notes' => $notes !== '' ? $notes : null
+                    ':opening_paid_amount' => $openingPaidAmount,
+                    ':opening_balance_date' => $loanOrigin === 'opening_balance' ? $loanDate : null,
+                    ':opening_paid_amount_total' => $openingPaidAmount,
+                    ':remaining_amount' => $loanAmount - $openingPaidAmount,
+                    ':disbursement_status' => $loanOrigin === 'opening_balance' ? 'draft' : 'disbursed',
+                    ':notes' => $notes !== '' ? $notes : null,':funding_source'=>$_POST['funding_source']??'company',':account_id'=>($_POST['account_id']??'')?:null,':operational_fund_id'=>($_POST['operational_fund_id']??'')?:null,':funding_party_id'=>($_POST['funding_party_id']??'')?:null,':payment_method'=>$_POST['payment_method']??'cash',':created_by'=>$_SESSION['user_id']??null
                 ]);
+                $loanId=(int)$pdo->lastInsertId();
+                if ($loanOrigin === 'new_disbursement') {
+                    $links=employee_funding_disburse($pdo,'employee_loans',$loanId,$loanAmount,$loanDate,$_POST['funding_source']??'company',(int)($_POST['account_id']??0),(int)($_POST['operational_fund_id']??0),(int)($_POST['funding_party_id']??0),$_POST['payment_method']??'cash','Pencairan pinjaman karyawan #'.$loanId,$_SESSION['user_id']??null);
+                    $pdo->prepare("UPDATE employee_loans SET transaction_id=:tx,debt_id=:debt WHERE id=:id")->execute([':tx'=>$links['transaction_id'],':debt'=>$links['debt_id'],':id'=>$loanId]);
+                }
+                $pdo->commit();
 
                 $success = 'Pinjaman karyawan berhasil ditambahkan.';
             } catch (Exception $e) {
+                if($pdo->inTransaction())$pdo->rollBack();
                 $error = 'Gagal menambahkan pinjaman: ' . $e->getMessage();
             }
         }
@@ -414,36 +437,22 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     }
 
     if ($action === 'mark_paid') {
-        $loanId = (int)($_POST['loan_id'] ?? 0);
-
-        if ($loanId > 0) {
-            $stmt = $pdo->prepare("
-                UPDATE employee_loans
-                SET status = 'paid',
-                    total_paid = loan_amount,
-                    remaining_amount = 0,
-                    updated_at = NOW()
-                WHERE id = :id
-            ");
-            $stmt->execute([':id' => $loanId]);
-
-            $success = 'Pinjaman berhasil ditandai lunas.';
-        }
+        $error = 'Pinjaman hanya dapat dilunasi melalui pencatatan cicilan agar histori pembayaran tetap lengkap.';
     }
 
     if ($action === 'cancel') {
         $loanId = (int)($_POST['loan_id'] ?? 0);
 
         if ($loanId > 0) {
-            $stmt = $pdo->prepare("
-                UPDATE employee_loans
-                SET status = 'cancelled',
-                    updated_at = NOW()
-                WHERE id = :id
-            ");
-            $stmt->execute([':id' => $loanId]);
-
-            $success = 'Pinjaman berhasil dibatalkan.';
+            try {
+                $pdo->beginTransaction();
+                employee_funding_cancel($pdo,'employee_loans',$loanId);
+                $pdo->commit();
+                $success = 'Pinjaman berhasil dibatalkan dan sumber dana dikembalikan.';
+            } catch (Exception $e) {
+                if($pdo->inTransaction())$pdo->rollBack();
+                $error = 'Gagal membatalkan pinjaman: '.$e->getMessage();
+            }
         }
     }
 
@@ -452,6 +461,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
         if ($loanId > 0) {
             try {
+                $pdo->beginTransaction();employee_funding_clear($pdo,'employee_loans',$loanId);
                 recalculate_employee_loan($pdo, $loanId);
                 $success = 'Status pinjaman berhasil diaktifkan kembali sesuai sisa pinjaman.';
             } catch (Exception $e) {
@@ -467,9 +477,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             try {
                 $deleteStmt = $pdo->prepare("DELETE FROM employee_loans WHERE id = :id");
                 $deleteStmt->execute([':id' => $loanId]);
+                $pdo->commit();
 
                 $success = 'Data pinjaman berhasil dihapus permanen.';
             } catch (Exception $e) {
+                if($pdo->inTransaction())$pdo->rollBack();
                 $error = 'Gagal menghapus pinjaman: ' . $e->getMessage();
             }
         }
@@ -481,13 +493,18 @@ $params = [];
 
 if ($keyword !== '') {
     $where[] = "(
-        e.full_name LIKE :keyword
-        OR e.employee_code LIKE :keyword
-        OR e.position LIKE :keyword
-        OR e.department LIKE :keyword
-        OR el.notes LIKE :keyword
+        e.full_name LIKE :keyword_name
+        OR e.employee_code LIKE :keyword_code
+        OR e.position LIKE :keyword_position
+        OR e.department LIKE :keyword_department
+        OR el.notes LIKE :keyword_notes
     )";
-    $params[':keyword'] = '%' . $keyword . '%';
+    $keywordValue = '%' . $keyword . '%';
+    $params[':keyword_name'] = $keywordValue;
+    $params[':keyword_code'] = $keywordValue;
+    $params[':keyword_position'] = $keywordValue;
+    $params[':keyword_department'] = $keywordValue;
+    $params[':keyword_notes'] = $keywordValue;
 }
 
 if ($statusFilter !== '') {
@@ -504,9 +521,16 @@ $stmt = $pdo->prepare("
         e.employee_code,
         e.position,
         e.department,
+        fa.account_name, ofu.fund_code, ofu.person_name AS fund_person_name,
+        COALESCE(fp.display_name,ofu.person_name) AS fund_holder_name,
+        cp.display_name AS funding_party_name,
         COALESCE(period_payments.period_total, 0) AS current_period_payment
     FROM employee_loans el
     JOIN employees e ON el.employee_id = e.id
+    LEFT JOIN finance_accounts fa ON fa.id=el.account_id
+    LEFT JOIN operational_funds ofu ON ofu.id=el.operational_fund_id
+    LEFT JOIN company_parties fp ON fp.id=ofu.holder_party_id
+    LEFT JOIN company_parties cp ON cp.id=el.funding_party_id
     LEFT JOIN (
         SELECT
             loan_id,
@@ -629,7 +653,7 @@ require_once __DIR__ . '/../../includes/sidebar.php';
     <?php endif; ?>
 
     <div class="alert alert-info rounded-3">
-        <strong>Aturan Cicilan:</strong> Nominal cicilan tidak boleh melebihi sisa pinjaman dan tidak boleh melebihi gaji tersedia pada periode payroll yang dipilih. Jika payroll periode tersebut sudah digenerate, sistem memakai gaji payroll sebagai acuan. Jika belum, sistem memakai salary master karyawan.
+        <strong>Aturan Cicilan:</strong> Total cicilan maksimal <?= htmlspecialchars((string)payroll_loan_installment_percent($pdo)); ?>% dari gaji periode yang dipilih dan tidak boleh melebihi sisa pinjaman. Jika payroll sudah digenerate, sistem memakai gaji bersih sebelum loan; jika belum, sistem memakai estimasi dari master gaji.
     </div>
 
     <div class="row g-4 mb-4">
@@ -685,6 +709,8 @@ require_once __DIR__ . '/../../includes/sidebar.php';
                     <?php endforeach; ?>
                 </select>
             </div>
+            <div class="col-md-3"><label class="form-label fw-semibold">Jenis Pencatatan</label><select name="loan_origin" class="form-select"><option value="new_disbursement">Pinjaman Baru (kurangi dana)</option><option value="opening_balance">Saldo Awal/Lama (tanpa kurangi dana)</option></select><small class="text-muted">Sumber dana diabaikan untuk saldo awal.</small></div>
+            <div class="col-md-3"><label class="form-label fw-semibold">Sudah Dibayar Sebelum Sistem</label><input type="text" name="opening_paid_amount" class="form-control money-input" value="0"><small class="text-muted">Diisi hanya untuk saldo awal.</small></div>
 
             <div class="col-md-2">
                 <label class="form-label fw-semibold">Tanggal Pinjaman</label>
@@ -700,6 +726,12 @@ require_once __DIR__ . '/../../includes/sidebar.php';
                 <label class="form-label fw-semibold">Catatan</label>
                 <input type="text" name="notes" class="form-control" placeholder="Contoh: Pinjaman pribadi / darurat">
             </div>
+
+            <div class="col-md-3"><label class="form-label fw-semibold">Sumber Dana</label><select name="funding_source" class="form-select funding-source"><option value="company">Kas/Bank Perusahaan</option><option value="operational_fund">Dana Operasional PIC</option><option value="party_advance">Talangan Pihak/PIC</option></select></div>
+            <div class="col-md-3 funding-choice" data-source="company"><label class="form-label">Akun Kas/Bank</label><select name="account_id" class="form-select"><option value="">Pilih akun</option><?php foreach($fundingOptions['accounts'] as $a):?><option value="<?=$a['id'];?>"><?=htmlspecialchars($a['account_name']);?> · <?=loan_money($a['current_balance']);?></option><?php endforeach;?></select></div>
+            <div class="col-md-3 funding-choice d-none" data-source="operational_fund"><label class="form-label">Dana Operasional PIC</label><select name="operational_fund_id" class="form-select"><option value="">Pilih dana</option><?php foreach($fundingOptions['funds'] as $f):?><option value="<?=$f['id'];?>"><?=htmlspecialchars($f['display_name']?:$f['person_name']);?> · <?=loan_money($f['current_balance']);?></option><?php endforeach;?></select></div>
+            <div class="col-md-3 funding-choice d-none" data-source="party_advance"><label class="form-label">Pihak/PIC Penalang</label><select name="funding_party_id" class="form-select"><option value="">Pilih pihak</option><?php foreach($fundingOptions['parties'] as $p):?><option value="<?=$p['id'];?>"><?=htmlspecialchars($p['display_name']);?></option><?php endforeach;?></select></div>
+            <div class="col-md-3"><label class="form-label">Metode</label><select name="payment_method" class="form-select"><option value="cash">Cash</option><option value="bank_transfer">Transfer</option><option value="qris">QRIS</option><option value="other">Lainnya</option></select></div>
 
             <div class="col-md-12">
                 <button type="submit" class="btn btn-nukari">
@@ -770,6 +802,7 @@ require_once __DIR__ . '/../../includes/sidebar.php';
                         <th>Karyawan</th>
                         <th>Tanggal</th>
                         <th>Pinjaman</th>
+                        <th>Sumber Dana</th>
                         <th>Terbayar</th>
                         <th>Sisa</th>
                         <th>Cicilan Periode Ini</th>
@@ -803,6 +836,8 @@ require_once __DIR__ . '/../../includes/sidebar.php';
                                     <?= loan_money($loan['loan_amount']); ?>
                                 </td>
 
+                                <td><span class="badge bg-light text-dark border"><?= htmlspecialchars(employee_funding_source_label($loan)); ?></span><div><small class="text-muted"><?= htmlspecialchars(ucwords(str_replace('_',' ',$loan['payment_method']??'cash'))); ?></small></div></td>
+
                                 <td class="fw-semibold text-success">
                                     <?= loan_money($loan['total_paid']); ?>
                                 </td>
@@ -835,14 +870,18 @@ require_once __DIR__ . '/../../includes/sidebar.php';
 
                                 <td>
                                     <?php if ($loan['status'] === 'active'): ?>
-                                        <form method="POST" class="row g-2 align-items-end">
+                                        <form method="POST" class="row g-2 align-items-end loan-period-form" data-employee-id="<?= (int)$loan['employee_id']; ?>" data-remaining="<?= (float)$loan['remaining_amount']; ?>">
                                             <input type="hidden" name="action" value="add_payment">
                                             <input type="hidden" name="loan_id" value="<?= (int)$loan['id']; ?>">
                                             <input type="hidden" name="month" value="<?= htmlspecialchars($month); ?>">
 
                                             <div class="col-6">
                                                 <label class="form-label small mb-1">Periode</label>
-                                                <input type="month" name="payment_period" class="form-control form-control-sm" value="<?= htmlspecialchars($month); ?>" required>
+                                                <select name="payment_period" class="form-select form-select-sm loan-period-input" required>
+                                                    <?php foreach (payroll_month_options($month) as $periodValue => $periodLabel): ?>
+                                                        <option value="<?= htmlspecialchars($periodValue); ?>" <?= $periodValue === $month ? 'selected' : ''; ?>><?= htmlspecialchars($periodLabel); ?></option>
+                                                    <?php endforeach; ?>
+                                                </select>
                                             </div>
 
                                             <div class="col-6">
@@ -860,7 +899,7 @@ require_once __DIR__ . '/../../includes/sidebar.php';
                                                     data-max-payment="<?= (float)$loan['max_payment_this_period']; ?>"
                                                     data-remaining="<?= (float)$loan['remaining_amount']; ?>"
                                                     required>
-                                                <small class="text-muted d-block mt-1">
+                                                <small class="text-muted d-block mt-1 loan-max-label">
                                                     Maks: <?= loan_money($loan['max_payment_this_period']); ?>
                                                 </small>
                                             </div>
@@ -887,15 +926,6 @@ require_once __DIR__ . '/../../includes/sidebar.php';
                                 <td>
                                     <div class="d-flex gap-2 flex-wrap">
                                         <?php if ($loan['status'] === 'active'): ?>
-                                            <form method="POST" onsubmit="return confirm('Tandai pinjaman ini sebagai lunas? Sisa pinjaman akan menjadi 0.');">
-                                                <input type="hidden" name="action" value="mark_paid">
-                                                <input type="hidden" name="loan_id" value="<?= (int)$loan['id']; ?>">
-                                                <input type="hidden" name="month" value="<?= htmlspecialchars($month); ?>">
-                                                <button type="submit" class="btn btn-sm btn-outline-success">
-                                                    Lunas
-                                                </button>
-                                            </form>
-
                                             <form method="POST" onsubmit="return confirm('Batalkan pinjaman ini? Data tetap tersimpan sebagai arsip.');">
                                                 <input type="hidden" name="action" value="cancel">
                                                 <input type="hidden" name="loan_id" value="<?= (int)$loan['id']; ?>">
@@ -1039,6 +1069,7 @@ require_once __DIR__ . '/../../includes/sidebar.php';
     </div>
 
 </main>
+<script>document.querySelector('.funding-source')?.addEventListener('change',function(){document.querySelectorAll('.funding-choice').forEach(e=>e.classList.toggle('d-none',e.dataset.source!==this.value));});</script>
 
 <script>
     document.addEventListener('DOMContentLoaded', function() {
@@ -1089,6 +1120,37 @@ require_once __DIR__ . '/../../includes/sidebar.php';
                 if (numericValue > maxPayment) {
                     event.preventDefault();
                     alert('Nominal cicilan melebihi batas cicilan periode ini. Maksimal: Rp ' + new Intl.NumberFormat('id-ID').format(maxPayment));
+                }
+            });
+        });
+
+        document.querySelectorAll('.loan-period-form').forEach(function(form) {
+            const periodInput = form.querySelector('.loan-period-input');
+            const amountInput = form.querySelector('.loan-payment-input');
+            const maxLabel = form.querySelector('.loan-max-label');
+            const submitButton = form.querySelector('button[type="submit"]');
+            if (!periodInput || !amountInput) return;
+
+            periodInput.addEventListener('change', async function() {
+                submitButton.disabled = true;
+                if (maxLabel) maxLabel.textContent = 'Menghitung batas periode...';
+                const query = new URLSearchParams({
+                    employee_id: form.dataset.employeeId,
+                    remaining: form.dataset.remaining,
+                    period: periodInput.value
+                });
+                try {
+                    const response = await fetch(<?= json_encode(base_url('pages/payroll/loan_limit.php')); ?> + '?' + query.toString(), {headers: {'Accept': 'application/json'}});
+                    const data = await response.json();
+                    if (!response.ok || !data.ok) throw new Error(data.message || 'Batas cicilan tidak dapat dihitung.');
+                    amountInput.dataset.maxPayment = String(data.max_payment || 0);
+                    if (maxLabel) maxLabel.textContent = 'Maks: Rp ' + new Intl.NumberFormat('id-ID').format(Math.floor(data.max_payment || 0)) + ' (' + data.percent + '% dari gaji periode)';
+                    submitButton.disabled = Number(data.max_payment || 0) <= 0;
+                    amountInput.dispatchEvent(new Event('blur'));
+                } catch (error) {
+                    amountInput.dataset.maxPayment = '0';
+                    if (maxLabel) maxLabel.textContent = error.message;
+                    submitButton.disabled = true;
                 }
             });
         });

@@ -1,5 +1,6 @@
 <?php
 require_once __DIR__ . '/../../includes/auth.php';
+require_once __DIR__ . '/asset_helpers.php';
 require_post();
 $type = $_GET['type'] ?? '';
 $id = (int)($_GET['id'] ?? 0);
@@ -12,7 +13,29 @@ $map = [
     'rental_payment' => 'asset_rental_payments'
 ];
 if ($id > 0 && $assetId > 0 && isset($map[$type])) {
-    $pdo->prepare("DELETE FROM {$map[$type]} WHERE id=:id")->execute([':id'=>$id]);
-    $_SESSION['success'] = 'Data berhasil dihapus.';
+    try {
+        $pdo->beginTransaction();
+        if ($type === 'maintenance') {
+            $stmt = $pdo->prepare("SELECT transaction_id, project_transaction_id FROM asset_maintenance WHERE id=:id AND asset_id=:asset_id LIMIT 1");
+            $stmt->execute([':id'=>$id, ':asset_id'=>$assetId]);
+            $record = $stmt->fetch(PDO::FETCH_ASSOC);
+            if ($record) {
+                if (!empty($record['project_transaction_id'])) $pdo->prepare("DELETE FROM project_transactions WHERE id=:id AND source_module='asset_maintenance'")->execute([':id'=>(int)$record['project_transaction_id']]);
+                if (!empty($record['transaction_id'])) {
+                    $accountStmt = $pdo->prepare("SELECT account_id FROM transactions WHERE id=:id LIMIT 1");
+                    $accountStmt->execute([':id'=>(int)$record['transaction_id']]);
+                    $accountId = (int)$accountStmt->fetchColumn();
+                    $pdo->prepare("DELETE FROM transactions WHERE id=:id")->execute([':id'=>(int)$record['transaction_id']]);
+                    if ($accountId && function_exists('finance_recalculate_account_balance')) finance_recalculate_account_balance($pdo, $accountId);
+                }
+            }
+        }
+        $pdo->prepare("DELETE FROM {$map[$type]} WHERE id=:id AND asset_id=:asset_id")->execute([':id'=>$id, ':asset_id'=>$assetId]);
+        $pdo->commit();
+        $_SESSION['success'] = 'Data berhasil dihapus.';
+    } catch (Exception $e) {
+        if ($pdo->inTransaction()) $pdo->rollBack();
+        $_SESSION['error'] = $e->getMessage();
+    }
 }
 redirect('pages/assets/detail.php?id=' . $assetId);

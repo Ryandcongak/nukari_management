@@ -1,6 +1,9 @@
 <?php
 require_once __DIR__ . '/../../includes/auth.php';
+header('Location: simple.php');
+exit;
 require_once __DIR__ . '/product_helpers.php';
+require_once __DIR__ . '/../../includes/master_data_helper.php';
 
 $pageTitle = 'Produk & Produksi - Nukari';
 
@@ -12,8 +15,15 @@ $where = [];
 $params = [];
 
 if ($q !== '') {
-    $where[] = "(product_code LIKE :q OR COALESCE(barcode_code,'') LIKE :q OR product_name LIKE :q OR category LIKE :q OR product_type LIKE :q OR unit LIKE :q OR description LIKE :q)";
-    $params[':q'] = '%' . $q . '%';
+    $where[] = "(product_code LIKE :q_code OR COALESCE(barcode_code,'') LIKE :q_barcode OR product_name LIKE :q_name OR category LIKE :q_category OR product_type LIKE :q_type OR unit LIKE :q_unit OR description LIKE :q_description)";
+    $queryValue = '%' . $q . '%';
+    $params[':q_code'] = $queryValue;
+    $params[':q_barcode'] = $queryValue;
+    $params[':q_name'] = $queryValue;
+    $params[':q_category'] = $queryValue;
+    $params[':q_type'] = $queryValue;
+    $params[':q_unit'] = $queryValue;
+    $params[':q_description'] = $queryValue;
 }
 if ($type !== '') {
     $where[] = "product_type = :type";
@@ -34,6 +44,7 @@ $summary = $pdo->query("
         COALESCE(SUM(CASE WHEN stock <= minimum_stock THEN 1 ELSE 0 END),0) AS low_stock,
         COALESCE(SUM(CASE WHEN product_type='recycle' THEN 1 ELSE 0 END),0) AS recycle_products,
         COALESCE(SUM(CASE WHEN product_type='eco_enzyme' THEN 1 ELSE 0 END),0) AS eco_enzyme_products,
+        COALESCE(SUM(CASE WHEN product_type='fertilizer' THEN 1 ELSE 0 END),0) AS fertilizer_products,
         COALESCE(SUM(CASE WHEN product_type='custom' THEN 1 ELSE 0 END),0) AS custom_products
     FROM products
 ")->fetch(PDO::FETCH_ASSOC);
@@ -115,6 +126,7 @@ function product_type_label($type) {
     $map = [
         'recycle' => 'Recycle',
         'eco_enzyme' => 'Eco Enzyme',
+        'fertilizer' => 'Pupuk',
         'custom' => 'Custom',
         'service' => 'Service',
         'other' => 'Other',
@@ -242,9 +254,7 @@ require_once __DIR__ . '/_style.php';
                 <label class="form-label small fw-bold">Tipe Produk</label>
                 <select name="type" class="form-select">
                     <option value="">Semua Tipe</option>
-                    <?php foreach (['recycle'=>'Recycle','eco_enzyme'=>'Eco Enzyme','custom'=>'Custom','service'=>'Service','other'=>'Other'] as $k=>$v): ?>
-                        <option value="<?= $k; ?>" <?= $type===$k?'selected':''; ?>><?= $v; ?></option>
-                    <?php endforeach; ?>
+                    <?=master_options($pdo,'product_type',$type);?>
                 </select>
             </div>
             <div class="col-lg-2 d-grid">
@@ -503,6 +513,7 @@ require_once __DIR__ . '/_style.php';
                 <div class="product-card-body">
                     <div class="d-flex justify-content-between py-2 border-bottom"><span>Recycle Product</span><strong><?= (int)$summary['recycle_products']; ?></strong></div>
                     <div class="d-flex justify-content-between py-2 border-bottom"><span>Eco Enzyme</span><strong><?= (int)$summary['eco_enzyme_products']; ?></strong></div>
+                    <div class="d-flex justify-content-between py-2 border-bottom"><span>Produk Pupuk</span><strong><?= (int)$summary['fertilizer_products']; ?></strong></div>
                     <div class="d-flex justify-content-between py-2"><span>Custom Product</span><strong><?= (int)$summary['custom_products']; ?></strong></div>
                 </div>
             </section>

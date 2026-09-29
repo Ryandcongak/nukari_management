@@ -86,7 +86,7 @@ $workers = $stmt->fetchAll(PDO::FETCH_ASSOC);
 $attendanceMap = [];
 foreach ($workers as $worker) {
     if (($worker['worker_type'] ?? '') === 'employee' && !empty($worker['employee_id']) && !empty($worker['start_date']) && !empty($worker['end_date'])) {
-        $attStmt = $pdo->prepare("\n            SELECT\n                COUNT(*) AS attendance_days,\n                COALESCE(SUM(work_minutes), 0) AS total_work_minutes,\n                COALESCE(SUM(\n                    CASE\n                        WHEN overtime_in IS NOT NULL AND overtime_out IS NOT NULL AND overtime_out > overtime_in\n                        THEN TIMESTAMPDIFF(MINUTE, CONCAT(attendance_date, ' ', overtime_in), CONCAT(attendance_date, ' ', overtime_out))\n                        ELSE 0\n                    END\n                ), 0) AS overtime_minutes\n            FROM attendances\n            WHERE employee_id = :employee_id\n              AND attendance_date BETWEEN :start_date AND :end_date\n              AND status IN ('present','late')\n        ");
+        $attStmt = $pdo->prepare("\n            SELECT\n                COALESCE(SUM(attendance_day_value), 0) AS attendance_days,\n                COALESCE(SUM(work_minutes), 0) AS total_work_minutes,\n                COALESCE(SUM(\n                    CASE\n                        WHEN COALESCE(overtime_minutes, 0) > 0 THEN overtime_minutes\n                        WHEN overtime_in IS NOT NULL AND overtime_out IS NOT NULL AND overtime_out > overtime_in\n                        THEN TIMESTAMPDIFF(MINUTE, CONCAT(attendance_date, ' ', overtime_in), CONCAT(attendance_date, ' ', overtime_out))\n                        ELSE 0\n                    END\n                ), 0) AS overtime_minutes\n            FROM attendances\n            WHERE employee_id = :employee_id\n              AND attendance_date BETWEEN :start_date AND :end_date\n              AND attendance_day_value > 0\n        ");
         $attStmt->execute([
             ':employee_id' => (int) $worker['employee_id'],
             ':start_date' => $worker['start_date'],
@@ -107,7 +107,7 @@ foreach ($workers as $w) {
 
 function render_worker_slip(array $worker, ?array $attendance = null)
 {
-    $workDays = (int) ($worker['work_days'] ?? 0);
+    $workDays = (float) ($worker['work_days'] ?? 0);
     $rate = (float) ($worker['rate'] ?? 0);
     $baseAmount = (($worker['worker_type'] ?? '') === 'borongan') ? $rate : ($workDays * $rate);
     $overtimeHours = (float) ($worker['overtime_hours'] ?? 0);
@@ -152,7 +152,7 @@ function render_worker_slip(array $worker, ?array $attendance = null)
             <div class="box attendance-box">
                 <h4>Referensi Absensi Fingerprint</h4>
                 <div class="line-row compact-row">
-                    <span class="label">Hadir</span><span class="value"><?= (int) $attendance['attendance_days']; ?> hari</span>
+                    <span class="label">Hadir</span><span class="value"><?= ws_num($attendance['attendance_days']); ?> hari</span>
                     <span class="label">Jam Kerja</span><span class="value"><?= ws_num(((int) $attendance['total_work_minutes']) / 60); ?> jam</span>
                     <span class="label">Lembur FP</span><span class="value"><?= ws_num(((int) $attendance['overtime_minutes']) / 60); ?> jam</span>
                 </div>
@@ -170,7 +170,7 @@ function render_worker_slip(array $worker, ?array $attendance = null)
             <tbody>
                 <tr>
                     <td>Upah Dasar</td>
-                    <td class="text-right"><?= (($worker['worker_type'] ?? '') === 'borongan') ? 'Borongan' : ($workDays . ' hari × ' . ws_money($rate)); ?></td>
+                    <td class="text-right"><?= (($worker['worker_type'] ?? '') === 'borongan') ? 'Borongan' : (ws_num($workDays) . ' hari × ' . ws_money($rate)); ?></td>
                     <td class="text-right"><?= ws_money($baseAmount); ?></td>
                 </tr>
                 <tr>
@@ -223,7 +223,7 @@ function render_worker_slip(array $worker, ?array $attendance = null)
     <title>Slip Pekerja Project - <?= ws_e($project['project_name'] ?? 'Project'); ?></title>
     <style>
         * { box-sizing: border-box; }
-        body { margin: 0; padding: 18px; font-family: Arial, sans-serif; background: #eef2f5; color: #111827; }
+        body { margin: 0; padding: 18px; font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Helvetica Neue", Arial, sans-serif; background: #eef2f5; color: #111827; }
         .actions { max-width: 210mm; margin: 0 auto 12px; display: flex; gap: 8px; justify-content: flex-end; align-items: center; flex-wrap: wrap; }
         .btn { border: 0; border-radius: 8px; padding: 9px 14px; font-size: 13px; text-decoration: none; cursor: pointer; display: inline-block; font-weight: 700; }
         .btn-back { background: #e5e7eb; color: #111827; }

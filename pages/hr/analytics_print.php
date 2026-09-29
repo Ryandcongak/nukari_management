@@ -127,7 +127,12 @@ $totalStatus = max(1, array_sum($statusCounts));
         <div class="col-md-7">
             <div class="formula-box">
                 <strong>Formula score:</strong> kehadiran efektif 35%, disiplin 25%, jam kerja efektif 25%, lembur 10%, dan cuti/izin approved 5%.
-                Sabtu/Minggu tidak dihitung sebagai hari kerja. Cuti/izin/sakit/dinas approved tidak langsung menurunkan attendance rate.
+                Periode mengikuti setting payroll. Semua hari dihitung 8 jam. Cuti/izin/sakit/dinas approved tidak langsung menurunkan attendance rate.
+                Keterlambatan dan pulang awal memakai nilai baku yang tersimpan pada absensi, tanpa toleransi tambahan di Analytics.
+                Setengah hari pagi: masuk 07.00–08.30 dan pulang 11.30–13.59. Setengah hari siang: masuk 11.30–13.30 dan pulang mulai 16.30.
+                Hari penuh pada semua hari: masuk 08.00–08.30 dan pulang 16.30–17.30.
+                Karyawan tanpa alpha dengan durasi lembur melebihi total waktu telat dan pulang awal mendapat apresiasi Sangat Baik sebagai loyal dan berdedikasi.
+                Status Baik diberikan saat frekuensi lembur melampaui masing-masing kejadian telat/pulang awal, atau durasi lembur menutup minimal 75% waktu kedisiplinan.
             </div>
         </div>
         <div class="col-md-5">
@@ -185,6 +190,16 @@ $totalStatus = max(1, array_sum($statusCounts));
         </div>
     </div>
 
+    <div class="section-title">Ringkasan Perbandingan & Kandidat Reward</div>
+    <div class="row g-3 mb-3">
+        <div class="col-md-6"><div class="section-card"><strong>Kandidat Reward</strong><div class="small-muted mb-2">Score ≥90, tanpa alpha dan tanpa pulang awal.</div><?php foreach ($rewardCandidates as $r): ?><div><?= h($r['full_name']); ?> — <strong><?= h($r['score']); ?></strong></div><?php endforeach; ?><?php if (!$rewardCandidates): ?><span class="small-muted">Belum ada kandidat.</span><?php endif; ?></div></div>
+        <div class="col-md-6"><div class="section-card"><strong>Datang Awal Terbanyak</strong><?php foreach ($mostEarlyArrival as $r): ?><div><?= h($r['full_name']); ?> — <?= hr_to_int($r['early_arrival_days']); ?>x</div><?php endforeach; ?><?php if (!$mostEarlyArrival): ?><div class="small-muted">Belum ada data.</div><?php endif; ?></div></div>
+        <div class="col-md-3"><div class="section-card"><strong>Tanpa/Jarang Pulang Awal</strong><?php foreach ($bestNoEarlyLeave as $r): ?><div><?= h($r['full_name']); ?> — <?= hr_to_int($r['early_leave_days']); ?>x</div><?php endforeach; ?></div></div>
+        <div class="col-md-3"><div class="section-card"><strong>Cuti Paling Sedikit</strong><?php foreach ($leastLeave as $r): ?><div><?= h($r['full_name']); ?> — <?= hr_to_int($r['approved_leave_days']); ?> hari</div><?php endforeach; ?></div></div>
+        <div class="col-md-3"><div class="section-card"><strong>Lembur Terbanyak</strong><?php foreach ($mostOvertime as $r): ?><div><?= h($r['full_name']); ?> — <?= hr_decimal_hours($r['total_overtime_minutes']); ?> jam</div><?php endforeach; ?></div></div>
+        <div class="col-md-3"><div class="section-card"><strong>Perlu Dilihat</strong><div class="small-muted">Pulang awal, cuti, dan lembur rendah tetap perlu konteks admin.</div></div></div>
+    </div>
+
     <div class="section-title">Detail Evaluasi Karyawan</div>
     <div class="table-responsive">
         <table class="table table-sm table-bordered align-middle">
@@ -212,7 +227,7 @@ $totalStatus = max(1, array_sum($statusCounts));
                     <td class="fw-bold text-success"><?= hr_to_int($row['rank']); ?></td>
                     <td><strong><?= h($row['full_name']); ?></strong><br><span class="small-muted"><?= h($row['employee_code'] ?? '-'); ?> · <?= h($row['position'] ?? '-'); ?></span></td>
                     <td><?= h($row['department'] ?? '-'); ?></td>
-                    <td class="text-center"><?= hr_to_int($row['present_days']); ?>/<?= hr_to_int($row['effective_work_days']); ?></td>
+                    <td class="text-center"><?= hr_day_number($row['present_days']); ?>/<?= hr_day_number($row['effective_work_days']); ?><?php if (hr_to_int($row['half_day_count'] ?? 0) > 0): ?><br><span class="small-muted">Setengah: <?= hr_to_int($row['half_day_count']); ?>x</span><?php endif; ?></td>
                     <td class="text-center"><?= hr_to_int($row['approved_leave_days']); ?></td>
                     <td class="text-center"><?= hr_to_int($row['absent_days']); ?></td>
                     <td class="text-center"><?= hr_to_int($row['late_days']); ?>x<br><span class="small-muted"><?= hr_minutes_to_text($row['late_minutes']); ?></span></td>

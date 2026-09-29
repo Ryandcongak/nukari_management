@@ -187,7 +187,7 @@ require_once __DIR__ . '/../../includes/sidebar.php';
             <div class="panel h-100">
                 <div class="d-flex justify-content-between">
                     <div>
-                        <div class="text-muted small">Dana Talangan Belum Dibayar</div>
+                        <div class="text-muted small">Histori Talangan Belum Dibayar</div>
                         <div class="fs-4 fw-bold text-warning"><?= rupiah($activeReimbursement); ?></div>
                     </div>
                     <a href="<?= base_url('pages/reimbursements/index.php'); ?>" class="btn btn-sm btn-outline-warning align-self-start">Lihat</a>
@@ -261,6 +261,7 @@ require_once __DIR__ . '/../../includes/sidebar.php';
                             <tr>
                                 <th>Tanggal</th>
                                 <th>Kode</th>
+                                <th>Nama Transaksi</th>
                                 <th>Jenis</th>
                                 <th>Kategori</th>
                                 <th>Akun</th>
@@ -273,7 +274,8 @@ require_once __DIR__ . '/../../includes/sidebar.php';
                             <?php foreach ($recentTransactions as $t): ?>
                                 <tr>
                                     <td><?= date('d M Y', strtotime($t['transaction_date'])); ?></td>
-                                    <td><span class="fw-semibold"><?= f_e($t['transaction_code']); ?></span><br><small class="text-muted"><?= f_e(f_source_label($t['source_module'])); ?></small></td>
+                                    <td><span class="fw-semibold"><?= f_e($t['reference_code'] ?: '-'); ?></span><br><small class="text-muted">Sistem: <?= f_e($t['transaction_code']); ?></small></td>
+                                    <td><b><?=f_e($t['transaction_name'] ?: $t['description'] ?: '-');?></b><br><small class="text-muted"><?= f_e(f_source_label($t['source_module'])); ?></small></td>
                                     <td><?= f_type_badge($t['type']); ?></td>
                                     <td><?= f_e($t['category_name'] ?: '-'); ?></td>
                                     <td><?= f_e($t['account_name'] ?: '-'); ?></td>
@@ -284,7 +286,7 @@ require_once __DIR__ . '/../../includes/sidebar.php';
                                 </tr>
                             <?php endforeach; ?>
                         <?php else: ?>
-                            <tr><td colspan="7" class="text-center text-muted py-4">Belum ada transaksi pada periode ini.</td></tr>
+                            <tr><td colspan="8" class="text-center text-muted py-4">Belum ada transaksi pada periode ini.</td></tr>
                         <?php endif; ?>
                         </tbody>
                     </table>

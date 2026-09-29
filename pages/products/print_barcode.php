@@ -19,6 +19,7 @@ $labelCode = trim((string)($p['product_code'] ?? '')) ?: $scanCode;
 $typeMap = [
     'recycle' => 'Recycle Product',
     'eco_enzyme' => 'Eco Enzyme',
+    'fertilizer' => 'Produk Pupuk',
     'custom' => 'Custom Product',
     'service' => 'Service',
     'other' => 'Product'
@@ -35,7 +36,7 @@ $typeLabel = $typeMap[$p['product_type'] ?? 'other'] ?? 'Product';
 <style>
 *{box-sizing:border-box}
 :root{--green:#12864f;--ink:#111827;--muted:#64748b;--line:#d7dee8;--soft:#f4f7f6}
-body{font-family:Arial,Helvetica,sans-serif;background:var(--soft);margin:0;padding:22px;color:var(--ink)}
+body{font-family:-apple-system,BlinkMacSystemFont,"SF Pro Text","Helvetica Neue",Arial,sans-serif;background:var(--soft);margin:0;padding:22px;color:var(--ink)}
 .toolbar{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;margin-bottom:16px}
 .toolbar-title{font-weight:900;font-size:18px;line-height:1.2}.toolbar-sub{font-size:12px;color:var(--muted);margin-top:2px}
 .actions{display:flex;gap:8px;align-items:center;flex-wrap:wrap}.btn{border:1px solid #d1d5db;background:#fff;border-radius:999px;padding:10px 16px;font-weight:800;cursor:pointer;text-decoration:none;color:var(--ink)}.btn.green{background:var(--green);color:#fff;border-color:var(--green)}

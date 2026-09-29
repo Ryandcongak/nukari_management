@@ -1,4 +1,10 @@
 <?php
+require_once __DIR__ . '/includes/functions.php';
+ini_set('session.use_strict_mode', '1');
+ini_set('session.use_only_cookies', '1');
+ini_set('session.cookie_httponly', '1');
+ini_set('session.cookie_samesite', 'Lax');
+ini_set('session.cookie_secure', request_is_https() ? '1' : '0');
 session_start();
 
 require_once __DIR__ . '/config/database.php';

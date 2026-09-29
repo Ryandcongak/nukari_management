@@ -68,6 +68,18 @@ function cashier_category_id(PDO $pdo, string $name = 'Penjualan Produk') {
         return null;
     }
 }
+function cashier_phone_key(string $phone): string { $key=preg_replace('/\D+/','',$phone);if(strpos($key,'0')===0)$key='62'.substr($key,1);return $key; }
+function cashier_resolve_client(PDO $pdo,int $selectedId,string $name,string $phone,string $email,bool $create,bool $required=false): array {
+    if($selectedId>0){$s=$pdo->prepare("SELECT * FROM clients WHERE id=:id AND status='active' LIMIT 1");$s->execute([':id'=>$selectedId]);$c=$s->fetch(PDO::FETCH_ASSOC);if(!$c)throw new Exception('Client yang dipilih tidak ditemukan.');return [(int)$c['id'],$c['client_name'],$c['phone']?:$phone,$c['email']?:$email];}
+    if(!$create&&!$required)return [null,$name,$phone,$email];
+    if($name==='')throw new Exception('Nama customer wajib diisi.');
+    if($required&&$phone==='')throw new Exception('Nomor WhatsApp wajib untuk Custom Order.');
+    $phoneKey=cashier_phone_key($phone);$emailKey=strtolower(trim($email));
+    foreach($pdo->query("SELECT * FROM clients")->fetchAll(PDO::FETCH_ASSOC) as $c){if(($phoneKey!==''&&cashier_phone_key((string)$c['phone'])===$phoneKey)||($emailKey!==''&&strtolower((string)$c['email'])===$emailKey))return [(int)$c['id'],$c['client_name'],$c['phone']?:$phone,$c['email']?:$email];}
+    $s=$pdo->prepare("INSERT INTO clients(client_name,contact_person,phone,email,status,notes,created_at) VALUES(:name,:contact,:phone,:email,'active','Dibuat dari POS / Custom Order',NOW())");$s->execute([':name'=>$name,':contact'=>$name,':phone'=>$phone?:null,':email'=>$email?:null]);return [(int)$pdo->lastInsertId(),$name,$phone,$email];
+}
+
+$clients=$pdo->query("SELECT id,client_name,phone,email FROM clients WHERE status='active' ORDER BY client_name")->fetchAll(PDO::FETCH_ASSOC);
 
 $errors = [];
 $success = '';
@@ -84,6 +96,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $customerName = trim($_POST['customer_name'] ?? '');
         $customerPhone = trim($_POST['customer_phone'] ?? '');
         $customerEmail = trim($_POST['customer_email'] ?? '');
+        $clientId = (int)($_POST['client_id'] ?? 0);
         $channel = $_POST['channel'] ?? 'cashier';
         $paymentMethod = $_POST['payment_method'] ?? 'cash';
         $discountAmount = max(0, cashier_parse_number($_POST['discount_amount'] ?? 0));
@@ -92,6 +105,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         if (!$errors) {
             try {
                 $pdo->beginTransaction();
+                [$clientId,$customerName,$customerPhone,$customerEmail]=cashier_resolve_client($pdo,$clientId,$customerName,$customerPhone,$customerEmail,!empty($_POST['save_customer']),false);
 
                 $ids = array_values(array_unique(array_map(fn($i) => (int)($i['id'] ?? 0), $cart)));
                 $ids = array_filter($ids);
@@ -114,11 +128,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     $p = $productMap[$pid];
                     $qty = max(0, cashier_parse_number($item['qty'] ?? 0));
                     if ($qty <= 0) throw new Exception('Qty produk ' . $p['product_name'] . ' tidak valid.');
-                    if ($qty > (float)$p['stock']) throw new Exception('Stok ' . $p['product_name'] . ' tidak cukup. Stok tersedia: ' . cashier_num($p['stock']) . ' ' . ($p['unit'] ?? 'pcs'));
+                    if ((int)($p['track_stock'] ?? 1) === 1 && $qty > (float)$p['stock']) throw new Exception('Stok ' . $p['product_name'] . ' tidak cukup. Stok tersedia: ' . cashier_num($p['stock']) . ' ' . ($p['unit'] ?? 'pcs'));
 
                     $unitPrice = cashier_parse_number($item['unit_price'] ?? $p['selling_price']);
                     if ($unitPrice <= 0) $unitPrice = (float)$p['selling_price'];
-                    $hpp = (float)($p['hpp_price'] ?? 0);
+                    $hpp = (float)($p['base_price'] ?? $p['hpp_price'] ?? 0);
                     $gross = $qty * $unitPrice;
                     $subtotal += $gross;
 
@@ -155,10 +169,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $transactionId = (int)$pdo->lastInsertId();
 
                 $stmt = $pdo->prepare("INSERT INTO product_cashier_sales
-                    (receipt_code, sale_date, customer_name, customer_phone, customer_email, channel, subtotal, discount_amount, contribution_amount, total_amount, payment_method, payment_status, transaction_id, notes, created_by)
-                    VALUES (?, NOW(), ?, ?, ?, ?, ?, ?, 0, ?, ?, 'paid', ?, ?, ?)");
+                    (receipt_code, sale_date, client_id, customer_name, customer_phone, customer_email, channel, subtotal, discount_amount, contribution_amount, total_amount, payment_method, payment_status, transaction_id, notes, created_by)
+                    VALUES (?, NOW(), ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, 'paid', ?, ?, ?)");
                 $stmt->execute([
                     $receiptCode,
+                    $clientId,
                     $customerName ?: null,
                     $customerPhone ?: null,
                     $customerEmail ?: null,
@@ -174,12 +189,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $saleId = (int)$pdo->lastInsertId();
 
                 $insertItem = $pdo->prepare("INSERT INTO product_cashier_sale_items
-                    (sale_id, product_id, product_code, barcode_code, product_name, qty, unit_price, hpp_price, gross_amount, discount_amount, contribution_percent, contribution_amount, net_amount, profit_amount)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
+                    (sale_id, product_id, product_code, barcode_code, product_name, qty, unit_price, base_price, hpp_price, gross_amount, discount_amount, contribution_percent, contribution_amount, net_amount, profit_amount)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
                 $updateStock = $pdo->prepare("UPDATE products SET stock = stock - ?, updated_at = NOW() WHERE id = ?");
                 $insertSale = $pdo->prepare("INSERT INTO product_sales
-                    (sale_code, product_id, sale_date, channel, customer_name, qty, unit_price, gross_amount, marketplace_fee, shipping_cost, contribution_percent, contribution_amount, contribution_program_name, net_amount, hpp_total, profit_amount, payment_method, transaction_id, notes, created_by)
-                    VALUES (?, ?, CURDATE(), ?, ?, ?, ?, ?, 0, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
+                    (sale_code, product_id, sale_date, client_id, channel, customer_name, qty, unit_price, gross_amount, marketplace_fee, shipping_cost, contribution_percent, contribution_amount, contribution_program_name, net_amount, hpp_total, profit_amount, payment_method, transaction_id, notes, created_by)
+                    VALUES (?, ?, CURDATE(), ?, ?, ?, ?, ?, ?, 0, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
 
                 foreach ($lines as $line) {
                     $p = $line['product'];
@@ -200,6 +215,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                         $line['qty'],
                         $line['unit_price'],
                         $line['hpp_price'],
+                        $line['hpp_price'],
                         $line['gross_amount'],
                         $itemDiscount,
                         $percent,
@@ -208,11 +224,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                         $profit
                     ]);
 
-                    $updateStock->execute([$line['qty'], $p['id']]);
+                    if ((int)($p['track_stock'] ?? 1) === 1) $updateStock->execute([$line['qty'], $p['id']]);
 
                     $insertSale->execute([
                         'SALE-' . date('YmdHis') . '-' . random_int(10, 99),
                         $p['id'],
+                        $clientId,
                         cashier_product_sales_channel($channel),
                         $customerName ?: null,
                         $line['qty'],
@@ -248,6 +265,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $customerName = trim($_POST['co_customer_name'] ?? '');
         $customerPhone = trim($_POST['co_customer_phone'] ?? '');
         $customerEmail = trim($_POST['co_customer_email'] ?? '');
+        $clientId = (int)($_POST['co_client_id'] ?? 0);
         $productName = trim($_POST['co_product_name'] ?? '');
         $description = trim($_POST['co_description'] ?? '');
         $dueDate = $_POST['co_due_date'] ?: null;
@@ -267,6 +285,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         if (!$errors) {
             try {
                 $pdo->beginTransaction();
+                [$clientId,$customerName,$customerPhone,$customerEmail]=cashier_resolve_client($pdo,$clientId,$customerName,$customerPhone,$customerEmail,true,true);
 
                 if ($paymentMode === 'full') {
                     $downPayment = 0;
@@ -308,12 +327,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 }
 
                 $stmt = $pdo->prepare("INSERT INTO product_custom_orders
-                    (order_code, customer_name, customer_phone, product_name, description, order_date, due_date, qty, unit, estimated_cost, offered_price, down_payment, final_payment, profit_estimate, status, transaction_id, notes, created_by)
-                    VALUES (?, ?, ?, ?, ?, CURDATE(), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
+                    (order_code, client_id, customer_name, customer_phone, customer_email, product_name, description, order_date, due_date, qty, unit, estimated_cost, offered_price, down_payment, final_payment, profit_estimate, status, transaction_id, notes, created_by)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, CURDATE(), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
                 $stmt->execute([
                     $orderCode,
+                    $clientId,
                     $customerName,
                     $customerPhone ?: null,
+                    $customerEmail ?: null,
                     $productName,
                     $description ?: null,
                     $dueDate,
@@ -342,7 +363,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     }
 }
 
-$products = $pdo->query("SELECT id, product_code, barcode_code, product_name, category, product_type, hpp_price, selling_price, stock, minimum_stock, unit, photo, contribution_percent, contribution_program_name, contribution_event_name, contribution_event_date, status FROM products WHERE status='active' ORDER BY product_name ASC")->fetchAll(PDO::FETCH_ASSOC);
+$products = $pdo->query("SELECT id, product_code, barcode_code, product_name, category, product_type, base_price, hpp_price, track_stock, selling_price, stock, minimum_stock, unit, photo, contribution_percent, contribution_program_name, contribution_event_name, contribution_event_date, status FROM products WHERE status='active' ORDER BY product_name ASC")->fetchAll(PDO::FETCH_ASSOC);
 $recentSales = $pdo->query("SELECT * FROM product_cashier_sales ORDER BY id DESC LIMIT 10")->fetchAll(PDO::FETCH_ASSOC);
 $recentCustom = $pdo->query("SELECT * FROM product_custom_orders ORDER BY id DESC LIMIT 8")->fetchAll(PDO::FETCH_ASSOC);
 
@@ -355,7 +376,8 @@ foreach ($products as $p) {
         'name' => $p['product_name'],
         'category' => $p['category'],
         'type' => $p['product_type'],
-        'hpp' => (float)$p['hpp_price'],
+        'hpp' => (float)($p['base_price'] ?: $p['hpp_price']),
+        'track_stock' => (int)$p['track_stock'],
         'price' => (float)$p['selling_price'],
         'stock' => (float)$p['stock'],
         'unit' => $p['unit'] ?: 'pcs',
@@ -522,18 +544,20 @@ require_once __DIR__ . '/_style.php';
                     </div>
                     <div class="pos-card-body border-top">
                         <div class="row g-3">
+                            <div class="col-md-12"><label class="form-label fw-bold">Customer Terdaftar</label><select class="pos-input js-client-select" name="client_id" data-prefix="sale"><option value="">Customer Umum / input manual</option><?php foreach($clients as $c):?><option value="<?=$c['id'];?>" data-name="<?=cashier_safe($c['client_name']);?>" data-phone="<?=cashier_safe($c['phone']);?>" data-email="<?=cashier_safe($c['email']);?>"><?=cashier_safe($c['client_name']);?><?= $c['phone']?' · '.cashier_safe($c['phone']):'';?></option><?php endforeach;?></select></div>
                             <div class="col-md-6">
                                 <label class="form-label fw-bold">Nama Customer</label>
-                                <input class="pos-input" name="customer_name" placeholder="Opsional">
+                                <input class="pos-input" id="saleCustomerName" name="customer_name" placeholder="Opsional">
                             </div>
                             <div class="col-md-6">
                                 <label class="form-label fw-bold">No. WhatsApp</label>
-                                <input class="pos-input" name="customer_phone" placeholder="Opsional">
+                                <input class="pos-input" id="saleCustomerPhone" name="customer_phone" placeholder="Opsional">
                             </div>
                             <div class="col-md-12">
                                 <label class="form-label fw-bold">Email</label>
-                                <input class="pos-input" name="customer_email" placeholder="Opsional untuk broadcast/email">
+                                <input class="pos-input" id="saleCustomerEmail" name="customer_email" placeholder="Opsional untuk broadcast/email">
                             </div>
+                            <div class="col-md-12"><label class="form-check"><input class="form-check-input" type="checkbox" name="save_customer" value="1"> <span class="form-check-label">Simpan sebagai Client baru jika belum terdaftar</span></label></div>
                             <div class="col-md-6">
                                 <label class="form-label fw-bold">Channel</label>
                                 <select class="pos-input" name="channel" id="saleChannel">
@@ -569,7 +593,7 @@ require_once __DIR__ . '/_style.php';
                             <div class="box"><div class="pos-muted">Diskon</div><strong id="sumDiscount">Rp 0</strong></div>
                             <div class="box green"><div class="pos-muted">Total Bayar</div><strong id="sumTotal">Rp 0</strong></div>
                             <div class="box yellow"><div class="pos-muted">Kontribusi Program</div><strong id="sumContribution">Rp 0</strong></div>
-                            <div class="box"><div class="pos-muted">HPP</div><strong id="sumHpp">Rp 0</strong></div>
+                            <div class="box"><div class="pos-muted">Harga Dasar</div><strong id="sumHpp">Rp 0</strong></div>
                             <div class="box"><div class="pos-muted">Estimasi Profit</div><strong id="sumProfit">Rp 0</strong></div>
                         </div>
 
@@ -588,9 +612,10 @@ require_once __DIR__ . '/_style.php';
                     <input type="hidden" name="action" value="checkout_custom">
                     <div class="pos-card-body">
                         <div class="row g-3">
-                            <div class="col-md-6"><label class="form-label fw-bold">Customer *</label><input class="pos-input" name="co_customer_name" required></div>
-                            <div class="col-md-6"><label class="form-label fw-bold">No. WhatsApp</label><input class="pos-input" name="co_customer_phone"></div>
-                            <div class="col-md-12"><label class="form-label fw-bold">Email</label><input class="pos-input" name="co_customer_email"></div>
+                            <div class="col-md-12"><label class="form-label fw-bold">Pilih Client *</label><select class="pos-input js-client-select" name="co_client_id" data-prefix="custom"><option value="">Client baru</option><?php foreach($clients as $c):?><option value="<?=$c['id'];?>" data-name="<?=cashier_safe($c['client_name']);?>" data-phone="<?=cashier_safe($c['phone']);?>" data-email="<?=cashier_safe($c['email']);?>"><?=cashier_safe($c['client_name']);?><?= $c['phone']?' · '.cashier_safe($c['phone']):'';?></option><?php endforeach;?></select><div class="pos-muted mt-1">Jika belum terdaftar, isi data di bawah dan sistem membuat Client baru.</div></div>
+                            <div class="col-md-6"><label class="form-label fw-bold">Customer *</label><input class="pos-input" id="customCustomerName" name="co_customer_name" required></div>
+                            <div class="col-md-6"><label class="form-label fw-bold">No. WhatsApp *</label><input class="pos-input" id="customCustomerPhone" name="co_customer_phone" required></div>
+                            <div class="col-md-12"><label class="form-label fw-bold">Email</label><input class="pos-input" id="customCustomerEmail" name="co_customer_email"></div>
                             <div class="col-md-12"><label class="form-label fw-bold">Nama Produk Custom *</label><input class="pos-input" name="co_product_name" required placeholder="Contoh: Bangku Recycle Custom"></div>
                             <div class="col-md-6"><label class="form-label fw-bold">Deadline</label><input type="date" class="pos-input" name="co_due_date"></div>
                             <div class="col-md-3"><label class="form-label fw-bold">Qty</label><input class="pos-input" name="co_qty" value="1"></div>
@@ -851,10 +876,10 @@ function addToCart(id){
     if(!p) return;
     const item = cart.find(i => i.id === id);
     if(item){
-        if(item.qty + 1 > p.stock){ alert('Stok tidak cukup.'); return; }
+        if(p.track_stock && item.qty + 1 > p.stock){ alert('Stok tidak cukup.'); return; }
         item.qty += 1;
     } else {
-        if(p.stock <= 0){ alert('Stok produk habis.'); return; }
+        if(p.track_stock && p.stock <= 0){ alert('Stok produk habis.'); return; }
         cart.push({id:p.id, qty:1, unit_price:p.price});
     }
     updateCart();
@@ -866,7 +891,7 @@ function changeQty(id, value){
     if(!item||!p) return;
     let qty = Number(value)||0;
     if(qty < 0) qty = 0;
-    if(qty > p.stock){ alert('Qty melebihi stok.'); qty = p.stock; }
+    if(p.track_stock && qty > p.stock){ alert('Qty melebihi stok.'); qty = p.stock; }
     item.qty = qty;
     updateCart();
 }
@@ -887,7 +912,7 @@ function updateCart(){
             if(!p) return '';
             const total = Number(i.qty) * Number(i.unit_price);
             return `<tr>
-                <td><strong>${escapeHtml(p.name)}</strong><div class="pos-muted">Stok ${formatQty(p.stock)} ${escapeHtml(p.unit)} · HPP ${money(p.hpp)}</div></td>
+                <td><strong>${escapeHtml(p.name)}</strong><div class="pos-muted">Stok ${formatQty(p.stock)} ${escapeHtml(p.unit)} · Harga Dasar ${money(p.hpp)}</div></td>
                 <td><input class="pos-input qty-input" value="${i.qty}" type="number" min="0" step="0.001" onchange="changeQty(${i.id}, this.value)" oninput="changeQty(${i.id}, this.value)"></td>
                 <td><input class="pos-input money-input" value="${Math.round(i.unit_price).toLocaleString('id-ID')}" oninput="changePrice(${i.id}, this.value)"></td>
                 <td><strong>${money(total)}</strong></td>
@@ -1133,6 +1158,7 @@ function updateCustomSummary(){
     document.getElementById('coStatus').textContent = status;
 }
 document.getElementById('customForm').addEventListener('input', updateCustomSummary);
+document.querySelectorAll('.js-client-select').forEach(select=>select.addEventListener('change',()=>{const option=select.selectedOptions[0],prefix=select.dataset.prefix;const map=prefix==='custom'?['customCustomerName','customCustomerPhone','customCustomerEmail']:['saleCustomerName','saleCustomerPhone','saleCustomerEmail'];if(!option?.value)return;document.getElementById(map[0]).value=option.dataset.name||'';document.getElementById(map[1]).value=option.dataset.phone||'';document.getElementById(map[2]).value=option.dataset.email||'';}));
 loadQueues(); restoreQueueForm(); renderProductList(); updateCart(); updateCustomSummary();
 </script>
 

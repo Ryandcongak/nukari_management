@@ -146,7 +146,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         ]);
         uploadProjectEvidenceReceipts($_FILES['receipt_images'] ?? null, $transaction_id, $pdo);
         $pdo->commit();
-        redirect('pages/projects/detail.php?id=' . $project_id . '&tab=workers#tab-workers');
+        redirect('pages/projects/detail.php?id=' . $project_id . '&tab=workers');
     } catch (Exception $e) {
         if ($pdo->inTransaction()) $pdo->rollBack();
         $error = $e->getMessage();
@@ -159,7 +159,7 @@ require_once __DIR__ . '/../../includes/header.php';
 require_once __DIR__ . '/../../includes/sidebar.php';
 ?>
 <main class="main-content">
-<div class="page-header d-flex justify-content-between align-items-center flex-wrap gap-3"><div><h1 class="fw-bold mb-1">Edit Pekerja Project</h1><p class="text-muted mb-0"><?= htmlspecialchars($worker['project_name']); ?></p></div><a href="<?= base_url('pages/projects/detail.php?id=' . $project_id . '&tab=workers#tab-workers'); ?>" class="btn btn-outline-success"><i class="bi bi-arrow-left me-1"></i> Kembali</a></div>
+<div class="page-header d-flex justify-content-between align-items-center flex-wrap gap-3"><div><h1 class="fw-bold mb-1">Edit Pekerja Project</h1><p class="text-muted mb-0"><?= htmlspecialchars($worker['project_name']); ?></p></div><a href="<?= base_url('pages/projects/detail.php?id=' . $project_id . '&tab=workers'); ?>" class="btn btn-outline-success"><i class="bi bi-arrow-left me-1"></i> Kembali</a></div>
 <?php if ($error): ?><div class="alert alert-danger rounded-4"><?= htmlspecialchars($error); ?></div><?php endif; ?>
 <div class="row g-4"><div class="col-lg-8"><div class="panel"><form method="POST" enctype="multipart/form-data" class="row g-3">
 <div class="col-md-12"><label class="form-label fw-semibold">Nama Pekerja / Tim</label><input type="text" name="worker_name" class="form-control" value="<?= htmlspecialchars($worker['worker_name']); ?>" required></div>
@@ -173,7 +173,7 @@ require_once __DIR__ . '/../../includes/sidebar.php';
 <div class="col-md-12"><label class="form-label fw-semibold">Metode Pembayaran</label><select name="payment_method" class="form-select"><option value="cash" <?= ($worker['payment_method']??'cash')==='cash'?'selected':''; ?>>Cash</option><option value="bank_transfer" <?= ($worker['payment_method']??'')==='bank_transfer'?'selected':''; ?>>Transfer Bank</option><option value="qris" <?= ($worker['payment_method']??'')==='qris'?'selected':''; ?>>QRIS</option><option value="other" <?= ($worker['payment_method']??'')==='other'?'selected':''; ?>>Lainnya</option></select></div>
 <div class="col-md-12"><label class="form-label fw-semibold">Catatan</label><textarea name="notes" rows="3" class="form-control"><?= htmlspecialchars($worker['notes'] ?? ''); ?></textarea></div>
 <div class="col-md-12"><label class="form-label fw-semibold">Tambah Bukti Pembayaran <span class="text-muted">(Optional)</span></label><input type="file" name="receipt_images[]" class="form-control" accept="image/*" multiple></div>
-<div class="col-12 d-flex gap-2"><button type="submit" class="btn btn-nukari"><i class="bi bi-save me-1"></i> Simpan Perubahan</button><a href="<?= base_url('pages/projects/detail.php?id=' . $project_id . '&tab=workers#tab-workers'); ?>" class="btn btn-light">Batal</a></div>
+<div class="col-12 d-flex gap-2"><button type="submit" class="btn btn-nukari"><i class="bi bi-save me-1"></i> Simpan Perubahan</button><a href="<?= base_url('pages/projects/detail.php?id=' . $project_id . '&tab=workers'); ?>" class="btn btn-light">Batal</a></div>
 </form></div></div><div class="col-lg-4"><div class="panel"><h5 class="fw-bold mb-3">Panduan</h5><ul class="small text-muted mb-0"><li>Perubahan sumber dana akan menyesuaikan Finance/Dana Operasional/Hutang.</li><li>Jika hutang dari transaksi ini sudah dibayar, sistem akan menolak perubahan sumber dana.</li></ul></div></div></div>
 </main>
 <script>function syncRate(){const el=document.getElementById('rate_display'),h=document.getElementById('rate_hidden');h.value=(el.value||'').replace(/\D/g,'');}function toggleFunding(){const f=document.getElementById('funding_source').value;document.getElementById('company_box').style.display=f==='company'?'block':'none';document.getElementById('operational_box').style.display=f==='operational_fund'?'block':'none';document.getElementById('person_box').style.display=f==='person'?'block':'none';}function togglePersonalMode(){const m=document.getElementById('personal_mode').value;document.getElementById('personal_employee_id').style.display=m==='employee'?'block':'none';document.getElementById('person_name').style.display=m==='manual'?'block':'none';}document.getElementById('rate_display').addEventListener('input',syncRate);document.getElementById('funding_source').addEventListener('change',toggleFunding);document.getElementById('personal_mode').addEventListener('change',togglePersonalMode);toggleFunding();togglePersonalMode();syncRate();</script>

@@ -7,9 +7,9 @@ $statusFilter = $_GET['status'] ?? '';
 
 function export_column_exists(PDO $pdo, string $table, string $column): bool
 {
-    $stmt = $pdo->prepare("SHOW COLUMNS FROM `{$table}` LIKE :column_name");
-    $stmt->execute([':column_name' => $column]);
-    return (bool)$stmt->fetch(PDO::FETCH_ASSOC);
+    $stmt = $pdo->prepare("SELECT COUNT(*) FROM information_schema.columns WHERE table_schema = DATABASE() AND table_name = :table_name AND column_name = :column_name");
+    $stmt->execute([':table_name' => $table, ':column_name' => $column]);
+    return (bool)$stmt->fetchColumn();
 }
 
 function xlsx_xml($value): string
@@ -95,8 +95,12 @@ $where = ['p.payroll_month = :month'];
 $params = [':month' => $month];
 
 if ($keyword !== '') {
-    $where[] = "(e.full_name LIKE :keyword OR e.employee_code LIKE :keyword OR e.position LIKE :keyword OR e.department LIKE :keyword)";
-    $params[':keyword'] = '%' . $keyword . '%';
+    $where[] = "(e.full_name LIKE :keyword_name OR e.employee_code LIKE :keyword_code OR e.position LIKE :keyword_position OR e.department LIKE :keyword_department)";
+    $keywordValue = '%' . $keyword . '%';
+    $params[':keyword_name'] = $keywordValue;
+    $params[':keyword_code'] = $keywordValue;
+    $params[':keyword_position'] = $keywordValue;
+    $params[':keyword_department'] = $keywordValue;
 }
 
 if ($statusFilter !== '') {
@@ -173,6 +177,7 @@ $summary = [
     'base_salary' => 0,
     'allowance_bonus' => 0,
     'manual_bonus' => 0,
+    'additional_amount' => 0,
     'overtime_amount' => 0,
     'gross_income' => 0,
     'cash_advance' => 0,
@@ -197,8 +202,9 @@ foreach ($rows as $row) {
     $baseSalary = safe_money_value($row['base_salary'] ?? 0);
     $allowanceBonus = safe_money_value($row['total_allowance'] ?? 0) + safe_money_value($row['total_bonus'] ?? 0);
     $manualBonus = safe_money_value($row['export_manual_bonus'] ?? 0);
+    $additionalAmount = safe_money_value($row['additional_amount'] ?? 0);
     $overtimeAmount = safe_money_value($row['overtime_amount'] ?? 0);
-    $grossIncome = $baseSalary + $allowanceBonus + $manualBonus + $overtimeAmount;
+    $grossIncome = $baseSalary + $allowanceBonus + $manualBonus + $additionalAmount + $overtimeAmount;
 
     $cashAdvance = safe_money_value($row['export_cash_advance_deduction'] ?? 0);
     $loanDeduction = safe_money_value($row['export_loan_deduction'] ?? 0);
@@ -231,6 +237,7 @@ foreach ($rows as $row) {
     $normalized['export_base_salary'] = $baseSalary;
     $normalized['export_allowance_bonus'] = $allowanceBonus;
     $normalized['export_manual_bonus_clean'] = $manualBonus;
+    $normalized['export_additional_amount'] = $additionalAmount;
     $normalized['export_overtime_amount'] = $overtimeAmount;
     $normalized['export_gross_income'] = $grossIncome;
     $normalized['export_cash_advance_clean'] = $cashAdvance;
@@ -247,6 +254,7 @@ foreach ($rows as $row) {
     $summary['base_salary'] += $baseSalary;
     $summary['allowance_bonus'] += $allowanceBonus;
     $summary['manual_bonus'] += $manualBonus;
+    $summary['additional_amount'] += $additionalAmount;
     $summary['overtime_amount'] += $overtimeAmount;
     $summary['gross_income'] += $grossIncome;
     $summary['cash_advance'] += $cashAdvance;
@@ -280,7 +288,7 @@ $fileName = 'Laporan_Payroll_Nukari_' . $month . '.xlsx';
 $sheetRows = [];
 $mergeCells = [];
 $rowNum = 1;
-$lastCol = 'Q';
+$lastCol = 'R';
 
 // Style indexes:
 // 0 default, 1 title, 2 subtitle, 3 muted, 4 section, 5 summary label, 6 summary money,
@@ -348,6 +356,7 @@ $headers1 = [
     'Gaji Pokok',
     'Tunj.+Bonus',
     'Manual Bonus',
+    'Tambahan',
     'Upah Lembur',
     'Total Pendapatan',
     'Total Pot. Payroll',
@@ -375,11 +384,12 @@ if ($rows) {
             ['v' => $row['full_name'] ?? '-', 's' => 15],
             ['v' => $row['position'] ?? '-', 's' => 8],
             ['v' => (int)($row['total_work_days'] ?? 0), 's' => 9, 't' => 'n'],
-            ['v' => (int)($row['total_present_days'] ?? 0), 's' => 9, 't' => 'n'],
+            ['v' => (float)($row['total_present_days'] ?? 0), 's' => 9, 't' => 'n'],
             ['v' => minutes_to_hour($row['total_overtime_minutes'] ?? 0), 's' => 9],
             ['v' => $row['export_base_salary'], 's' => 10, 't' => 'n'],
             ['v' => $row['export_allowance_bonus'], 's' => 10, 't' => 'n'],
             ['v' => $row['export_manual_bonus_clean'], 's' => 10, 't' => 'n'],
+            ['v' => $row['export_additional_amount'], 's' => 10, 't' => 'n'],
             ['v' => $row['export_overtime_amount'], 's' => 10, 't' => 'n'],
             ['v' => $row['export_gross_income'], 's' => 10, 't' => 'n'],
             ['v' => $row['export_total_payroll_deduction'], 's' => 11, 't' => 'n'],
@@ -403,6 +413,7 @@ if ($rows) {
         $summary['base_salary'],
         $summary['allowance_bonus'],
         $summary['manual_bonus'],
+        $summary['additional_amount'],
         $summary['overtime_amount'],
         $summary['gross_income'],
         $summary['total_payroll_deduction'],
@@ -412,10 +423,10 @@ if ($rows) {
     ];
     for ($i = 0; $i < count($totalValues); $i++) {
         $col = 8 + $i;
-        $style = ($col >= 13 && $col <= 15) ? 11 : ($col === 16 ? 12 : 10);
+        $style = ($col >= 14 && $col <= 16) ? 11 : ($col === 17 ? 12 : 10);
         $totalCells[] = xlsx_cell(xlsx_col($col) . $rowNum, $totalValues[$i], $style, 'n');
     }
-    $totalCells[] = xlsx_cell('Q' . $rowNum, '', 8);
+    $totalCells[] = xlsx_cell('R' . $rowNum, '', 8);
     $sheetRows[] = xlsx_row($rowNum, $totalCells, 25);
     $rowNum++;
 } else {

@@ -59,6 +59,7 @@ require_once __DIR__ . '/../../includes/sidebar.php';
                             <td class="fw-bold <?= (float)$a['current_balance'] >= 0 ? 'text-success' : 'text-danger'; ?>"><?= rupiah($a['current_balance']); ?></td>
                             <td><?= $a['status'] === 'active' ? '<span class="badge rounded-pill bg-success">Active</span>' : '<span class="badge rounded-pill bg-secondary">Inactive</span>'; ?></td>
                             <td class="text-end">
+                                <a href="<?= base_url('pages/finance/account_detail.php?id=' . $a['id']); ?>" class="btn btn-sm btn-outline-success">Detail Mutasi</a>
                                 <a href="<?= base_url('pages/finance/account_edit.php?id=' . $a['id']); ?>" class="btn btn-sm btn-outline-secondary">Edit</a>
                             </td>
                         </tr>

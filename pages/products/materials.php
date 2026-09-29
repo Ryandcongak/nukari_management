@@ -1,5 +1,7 @@
 <?php
 require_once __DIR__ . '/../../includes/auth.php';
+header('Location: simple.php?info=' . urlencode('Modul Bahan Baku sudah digantikan oleh Produk Sederhana.'));
+exit;
 require_once __DIR__ . '/product_helpers.php';
 
 $pageTitle = 'Gudang Bahan Baku - Nukari';
@@ -112,8 +114,13 @@ $where = [];
 $params = [];
 
 if ($q !== '') {
-    $where[] = "(material_code LIKE :q OR material_name LIKE :q OR category LIKE :q OR location LIKE :q OR supplier_name LIKE :q)";
-    $params[':q'] = '%' . $q . '%';
+    $where[] = "(material_code LIKE :q_code OR material_name LIKE :q_name OR category LIKE :q_category OR location LIKE :q_location OR supplier_name LIKE :q_supplier)";
+    $queryValue = '%' . $q . '%';
+    $params[':q_code'] = $queryValue;
+    $params[':q_name'] = $queryValue;
+    $params[':q_category'] = $queryValue;
+    $params[':q_location'] = $queryValue;
+    $params[':q_supplier'] = $queryValue;
 }
 if ($categoryFilter !== '') {
     $where[] = "category = :category";
@@ -427,7 +434,7 @@ require_once __DIR__ . '/_style.php';
 
                             <div class="col-12">
                                 <label class="form-label fw-semibold">Nama Bahan *</label>
-                                <input name="material_name" required class="form-control" value="<?= product_safe($edit['material_name'] ?? ''); ?>" placeholder="Contoh: Tutup Botol HDPE">
+                                <input type="text" name="material_name" required class="form-control" data-no-currency="1" value="<?= product_safe($edit['material_name'] ?? ''); ?>" placeholder="Contoh: Tutup Botol HDPE">
                             </div>
 
                             <div class="col-12">

@@ -16,9 +16,9 @@ if (!function_exists('payroll_table_has_column')) {
             return $cache[$key];
         }
         try {
-            $stmt = $pdo->prepare("SHOW COLUMNS FROM `{$table}` LIKE :column");
-            $stmt->execute([':column' => $column]);
-            $cache[$key] = (bool)$stmt->fetch(PDO::FETCH_ASSOC);
+            $stmt = $pdo->prepare("SELECT COUNT(*) FROM information_schema.columns WHERE table_schema = DATABASE() AND table_name = :table_name AND column_name = :column_name");
+            $stmt->execute([':table_name' => $table, ':column_name' => $column]);
+            $cache[$key] = (bool)$stmt->fetchColumn();
         } catch (Throwable $e) {
             $cache[$key] = false;
         }
@@ -40,18 +40,23 @@ if (!function_exists('payroll_workforce_schema_ready')) {
     }
 }
 
+if (!function_exists('payroll_ensure_fractional_attendance_days')) {
+    function payroll_ensure_fractional_attendance_days(PDO $pdo): void
+    {
+        $stmt = $pdo->query("SHOW COLUMNS FROM payrolls LIKE 'total_present_days'");
+        $column = $stmt->fetch(PDO::FETCH_ASSOC);
+        if ($column && stripos((string)$column['Type'], 'decimal') !== 0) {
+            $pdo->exec("ALTER TABLE payrolls MODIFY total_present_days DECIMAL(10,2) NOT NULL DEFAULT 0");
+        }
+    }
+}
+
 if (!function_exists('payroll_count_work_days_between')) {
     /**
      * Hitung hari kerja dengan dukungan kalender berbeda.
      *
-     * Default/workshop:
-     * - Senin-Jumat = 1 hari
-     * - Sabtu/Minggu = 0 hari
-     *
-     * Project saturday_half:
-     * - Senin-Jumat = 1 hari
-     * - Sabtu = 0.5 hari
-     * - Minggu = 0 hari
+     * Kebijakan perusahaan: semua hari bernilai 1 hari untuk rentang alokasi.
+     * Nilai setengah hari aktual berasal dari absensi, bukan nama hari.
      */
     function payroll_count_work_days_between(?string $startDate, ?string $endDate, array $schedule = []): float
     {
@@ -59,32 +64,12 @@ if (!function_exists('payroll_count_work_days_between')) {
             return 0;
         }
 
-        $type = $schedule['work_schedule_type'] ?? $schedule['schedule_type'] ?? 'workshop';
-        $satValue = isset($schedule['saturday_work_value']) ? (float)$schedule['saturday_work_value'] : 0;
-        $sunValue = isset($schedule['sunday_work_value']) ? (float)$schedule['sunday_work_value'] : 0;
-
-        if ($type === 'project_saturday_half' || $type === 'project') {
-            $satValue = $satValue > 0 ? $satValue : 0.5;
-            $sunValue = 0;
-        } elseif ($type === 'workshop' || $type === 'default') {
-            $satValue = 0;
-            $sunValue = 0;
-        }
-
         $count = 0.0;
         $current = strtotime($startDate);
         $end = strtotime($endDate);
 
         while ($current <= $end) {
-            $dayName = (int)date('N', $current); // 1=Senin, 6=Sabtu, 7=Minggu
-
-            if ($dayName >= 1 && $dayName <= 5) {
-                $count += 1;
-            } elseif ($dayName === 6) {
-                $count += max(0, min(1, $satValue));
-            } elseif ($dayName === 7) {
-                $count += max(0, min(1, $sunValue));
-            }
+            $count += 1;
 
             $current = strtotime('+1 day', $current);
         }
@@ -97,9 +82,9 @@ if (!function_exists('payroll_get_project_schedule')) {
     function payroll_get_project_schedule(array $projectRow): array
     {
         return [
-            'work_schedule_type' => $projectRow['work_schedule_type'] ?? 'project_saturday_half',
-            'saturday_work_value' => isset($projectRow['saturday_work_value']) ? (float)$projectRow['saturday_work_value'] : 0.5,
-            'sunday_work_value' => isset($projectRow['sunday_work_value']) ? (float)$projectRow['sunday_work_value'] : 0,
+            'work_schedule_type' => $projectRow['work_schedule_type'] ?? 'all_days_full',
+            'saturday_work_value' => isset($projectRow['saturday_work_value']) ? (float)$projectRow['saturday_work_value'] : 1.0,
+            'sunday_work_value' => isset($projectRow['sunday_work_value']) ? (float)$projectRow['sunday_work_value'] : 1.0,
         ];
     }
 }
@@ -119,13 +104,23 @@ if (!function_exists('payroll_get_project_worker_allocations')) {
         ]);
 
         $allocations = [];
+        $attendanceDaysStmt = $pdo->prepare("
+            SELECT COALESCE(SUM(attendance_day_value), 0)
+            FROM attendances
+            WHERE employee_id = :employee_id
+              AND attendance_date BETWEEN :period_start AND :period_end
+        ");
         foreach ($stmt->fetchAll(PDO::FETCH_ASSOC) as $row) {
             $start = max(strtotime($row['start_date']), strtotime($periodStart));
             $end = min(strtotime($row['end_date']), strtotime($periodEnd));
             $overlapStart = date('Y-m-d', $start);
             $overlapEnd = date('Y-m-d', $end);
-            $schedule = payroll_get_project_schedule($row);
-            $days = payroll_count_work_days_between($overlapStart, $overlapEnd, $schedule);
+            $attendanceDaysStmt->execute([
+                ':employee_id' => $employeeId,
+                ':period_start' => $overlapStart,
+                ':period_end' => $overlapEnd,
+            ]);
+            $days = (float)$attendanceDaysStmt->fetchColumn();
 
             if ($days <= 0) {
                 continue;

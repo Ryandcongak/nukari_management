@@ -87,7 +87,7 @@ html,body{
     background:var(--page-bg);
     color:#111827;
 }
-body{font-family:Arial, Helvetica, sans-serif}
+body{font-family:-apple-system,BlinkMacSystemFont,"SF Pro Text","Helvetica Neue",Arial,sans-serif}
 .receipt-page{
     width:100%;
     min-height:100vh;
@@ -249,7 +249,7 @@ body{font-family:Arial, Helvetica, sans-serif}
     <div class="receipt-center">
         <div class="receipt-title">ANGEN BALI</div>
         <div>PT Nukari Kriya Raya</div>
-        <div class="receipt-subtitle">Produk Recycle • Eco Enzyme</div>
+        <div class="receipt-subtitle">Produk Recycle • Eco Enzyme • Pupuk • Produk Nukari</div>
         <div class="receipt-subtitle">Custom Order • Program Lingkungan</div>
     </div>
 

@@ -1,5 +1,6 @@
 <?php
 require_once __DIR__ . '/helpers.php';
+require_once __DIR__ . '/../../includes/master_data_helper.php';
 
 $pageTitle = 'Edit Transaksi Manual - Nukari';
 $error = '';
@@ -20,12 +21,15 @@ if (($t['source_module'] ?? 'manual') !== 'manual') {
 $oldAccountId = (int)($t['account_id'] ?? 0);
 
 $accounts = $pdo->query("SELECT id, account_name, account_type FROM finance_accounts WHERE status='active' ORDER BY is_default DESC, account_name ASC")->fetchAll(PDO::FETCH_ASSOC);
-$categories = $pdo->query("SELECT id, category_name, type FROM transaction_categories ORDER BY type ASC, category_name ASC")->fetchAll(PDO::FETCH_ASSOC);
+$categoryStmt = $pdo->prepare("SELECT id, category_name FROM transaction_categories WHERE status='active' OR id=:current ORDER BY category_name ASC");
+$categoryStmt->execute([':current'=>(int)($t['category_id']??0)]);
+$categories = $categoryStmt->fetchAll(PDO::FETCH_ASSOC);
 $projects = $pdo->query("SELECT id, project_name FROM projects WHERE deleted_at IS NULL ORDER BY project_name ASC")->fetchAll(PDO::FETCH_ASSOC);
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     try {
         $type = in_array($_POST['type'] ?? '', ['income','expense'], true) ? $_POST['type'] : 'expense';
+        $transactionName = clean_input($_POST['transaction_name'] ?? '');
         $transactionDate = $_POST['transaction_date'] ?: date('Y-m-d');
         $accountId = !empty($_POST['account_id']) ? (int)$_POST['account_id'] : null;
         $categoryId = !empty($_POST['category_id']) ? (int)$_POST['category_id'] : null;
@@ -36,6 +40,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $referenceCode = clean_input($_POST['reference_code'] ?? '');
         $proofFile = f_upload_file('proof_file', $t['proof_file']);
 
+        if ($transactionName === '') throw new Exception('Nama transaksi wajib diisi.');
         if ($amount <= 0) throw new Exception('Nominal transaksi harus lebih dari 0.');
 
         $pdo->beginTransaction();
@@ -43,6 +48,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $stmt = $pdo->prepare("
             UPDATE transactions
             SET transaction_date = :date,
+                transaction_name = :transaction_name,
                 type = :type,
                 category_id = :category_id,
                 account_id = :account_id,
@@ -57,6 +63,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         ");
         $stmt->execute([
             ':date' => $transactionDate,
+            ':transaction_name' => $transactionName,
             ':type' => $type,
             ':category_id' => $categoryId,
             ':account_id' => $accountId,
@@ -105,6 +112,7 @@ require_once __DIR__ . '/../../includes/sidebar.php';
                     <option value="expense" <?= $t['type'] === 'expense' ? 'selected' : ''; ?>>Expense / Pengeluaran</option>
                 </select>
             </div>
+            <div class="col-md-8"><label class="form-label fw-semibold">Nama Transaksi</label><input type="text" name="transaction_name" class="form-control" value="<?=f_e($t['transaction_name'] ?: $t['description']);?>" required></div>
             <div class="col-md-4">
                 <label class="form-label fw-semibold">Tanggal</label>
                 <input type="date" name="transaction_date" class="form-control" value="<?= f_e($t['transaction_date']); ?>" required>
@@ -128,16 +136,14 @@ require_once __DIR__ . '/../../includes/sidebar.php';
                 <select name="category_id" class="form-select">
                     <option value="">Tanpa kategori</option>
                     <?php foreach ($categories as $c): ?>
-                        <option value="<?= (int)$c['id']; ?>" <?= (int)$t['category_id'] === (int)$c['id'] ? 'selected' : ''; ?>><?= f_e($c['category_name']); ?> (<?= f_e($c['type']); ?>)</option>
+                        <option value="<?= (int)$c['id']; ?>" <?= (int)$t['category_id'] === (int)$c['id'] ? 'selected' : ''; ?>><?= f_e($c['category_name']); ?></option>
                     <?php endforeach; ?>
                 </select>
             </div>
             <div class="col-md-4">
                 <label class="form-label fw-semibold">Metode Pembayaran</label>
                 <select name="payment_method" class="form-select">
-                    <?php foreach (['cash'=>'Cash','bank_transfer'=>'Bank Transfer','qris'=>'QRIS','other'=>'Lainnya'] as $k=>$v): ?>
-                        <option value="<?= $k; ?>" <?= $t['payment_method'] === $k ? 'selected' : ''; ?>><?= $v; ?></option>
-                    <?php endforeach; ?>
+                    <?= master_options($pdo,'payment_method',(string)$t['payment_method']); ?>
                 </select>
             </div>
 

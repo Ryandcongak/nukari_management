@@ -139,7 +139,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
         uploadTransactionReceipts($_FILES['receipt_images'] ?? null, $transaction_id, $pdo);
         $pdo->commit();
-        redirect('pages/projects/detail.php?id=' . $project_id . '&tab=transactions#tab-transactions');
+        redirect('pages/projects/detail.php?id=' . $project_id . '&tab=transactions');
     } catch (Exception $e) {
         if ($pdo->inTransaction()) $pdo->rollBack();
         $error = $e->getMessage();
@@ -152,7 +152,7 @@ require_once __DIR__ . '/../../includes/sidebar.php';
 <main class="main-content">
     <div class="page-header d-flex justify-content-between align-items-center flex-wrap gap-3">
         <div><h1 class="fw-bold mb-1">Tambah Transaksi</h1><p class="text-muted mb-0"><?= htmlspecialchars($project['project_name']); ?></p></div>
-        <a href="<?= base_url('pages/projects/detail.php?id=' . $project_id . '&tab=transactions#tab-transactions'); ?>" class="btn btn-outline-success"><i class="bi bi-arrow-left me-1"></i> Kembali</a>
+        <a href="<?= base_url('pages/projects/detail.php?id=' . $project_id . '&tab=transactions'); ?>" class="btn btn-outline-success"><i class="bi bi-arrow-left me-1"></i> Kembali</a>
     </div>
     <?php if ($error): ?><div class="alert alert-danger rounded-4"><?= htmlspecialchars($error); ?></div><?php endif; ?>
     <div class="row g-4"><div class="col-lg-8"><div class="panel">
@@ -168,7 +168,7 @@ require_once __DIR__ . '/../../includes/sidebar.php';
             <div class="col-md-6"><label class="form-label fw-semibold">Metode Pembayaran</label><select name="payment_method" class="form-select"><option value="cash">Cash</option><option value="bank_transfer">Transfer Bank</option><option value="qris">QRIS</option><option value="other">Lainnya</option></select></div>
             <div class="col-md-6"><label class="form-label fw-semibold">Jumlah</label><input type="text" id="amount_display" class="form-control currency-input" placeholder="Rp 1.000.000" autocomplete="off" required><input type="hidden" name="amount" id="amount"></div>
             <div class="col-md-12"><label class="form-label fw-semibold">Upload Bukti Transaksi <span class="text-muted">(Optional)</span></label><input type="file" name="receipt_images[]" class="form-control" accept="image/*" multiple><small class="text-muted">Format JPG, JPEG, PNG, WEBP. Maksimal 5MB per gambar.</small></div>
-            <div class="col-12 d-flex gap-2"><button type="submit" class="btn btn-nukari"><i class="bi bi-save me-1"></i> Simpan Transaksi</button><a href="<?= base_url('pages/projects/detail.php?id=' . $project_id . '&tab=transactions#tab-transactions'); ?>" class="btn btn-light">Batal</a></div>
+            <div class="col-12 d-flex gap-2"><button type="submit" class="btn btn-nukari"><i class="bi bi-save me-1"></i> Simpan Transaksi</button><a href="<?= base_url('pages/projects/detail.php?id=' . $project_id . '&tab=transactions'); ?>" class="btn btn-light">Batal</a></div>
         </form>
     </div></div><div class="col-lg-4"><div class="panel"><h5 class="fw-bold mb-3">Panduan</h5><ul class="text-muted small mb-0"><li><strong>Akun Perusahaan:</strong> langsung mengurangi saldo kas/bank.</li><li><strong>Dana Operasional:</strong> mengurangi saldo dana yang dipegang personal.</li><li><strong>Talangan Personal:</strong> langsung menjadi hutang perusahaan kepada personal.</li><li>Jika Dana Operasional kurang, selisih otomatis menjadi hutang personal.</li></ul></div></div></div>
 </main>

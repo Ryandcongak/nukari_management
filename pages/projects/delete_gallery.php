@@ -1,7 +1,8 @@
 <?php
 require_once __DIR__ . '/../../includes/auth.php';
+require_post();
 
-$id = $_GET['id'] ?? null;
+$id = $_POST['id'] ?? null;
 
 if (!$id) {
     redirect('pages/projects/index.php');
@@ -42,7 +43,7 @@ try {
     ");
     $delete->execute([':id' => $id]);
 
-    redirect('pages/projects/detail.php?id=' . $project_id . '&tab=gallery#tab-gallery');
+    redirect('pages/projects/detail.php?id=' . $project_id . '&tab=gallery');
 } catch (Exception $e) {
-    redirect('pages/projects/detail.php?id=' . $project_id . '&tab=gallery#tab-gallery');
+    redirect('pages/projects/detail.php?id=' . $project_id . '&tab=gallery');
 }

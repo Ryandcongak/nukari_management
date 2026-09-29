@@ -1,6 +1,10 @@
 <?php
 require_once __DIR__ . '/../../includes/auth.php';
+header('Location: simple.php?info=' . urlencode('Mutasi Bahan sudah dinonaktifkan pada Produk Sederhana.'));
+exit;
 require_once __DIR__ . '/product_helpers.php';
+require_once __DIR__ . '/../../includes/finance_helper.php';
+require_once __DIR__ . '/../../includes/master_data_helper.php';
 $pageTitle = 'Mutasi Stok Bahan - Nukari';
 
 $selected = (int)($_GET['material_id'] ?? 0);
@@ -42,6 +46,15 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $referenceType = $_POST['reference_type'] ?? 'manual';
     $description = trim($_POST['description'] ?? '');
     $movementDate = $_POST['movement_date'] ?? date('Y-m-d');
+    $acquisitionType = $_POST['acquisition_type'] ?? 'other';
+    $fundingSource = $_POST['funding_source'] ?? 'none';
+    $accountId = (int)($_POST['account_id'] ?? 0);
+    $operationalFundId = (int)($_POST['operational_fund_id'] ?? 0);
+    $personalEmployeeId = (int)($_POST['personal_employee_id'] ?? 0);
+    $personalName = trim($_POST['personal_name'] ?? '');
+    $supplierId = (int)($_POST['supplier_id'] ?? 0);
+    $paymentMethod = finance_normalize_payment_method($_POST['payment_method'] ?? 'cash');
+    $referenceCode = trim($_POST['reference_code'] ?? '');
 
     $matStmt = $pdo->prepare("SELECT id, material_name, stock FROM raw_materials WHERE id=? AND status='active' LIMIT 1");
     $matStmt->execute([$mid]);
@@ -53,6 +66,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $error = 'Jumlah mutasi tidak boleh 0.';
     } elseif (in_array($movementType, ['out', 'damaged', 'lost'], true) && abs($qty) > (float)$material['stock']) {
         $error = 'Jumlah keluar/rusak/hilang melebihi stok tersedia.';
+    } elseif ($movementType === 'in' && $acquisitionType === 'purchase' && $price <= 0) {
+        $error = 'Harga satuan wajib diisi untuk pembelian bahan.';
+    } elseif ($movementType === 'in' && $acquisitionType === 'purchase' && !in_array($fundingSource, ['company','operational_fund','personal','supplier_credit'], true)) {
+        $error = 'Pilih sumber dana pembelian bahan.';
     } else {
         if (in_array($movementType, ['out', 'damaged', 'lost'], true)) {
             $qty = abs($qty);
@@ -62,17 +79,62 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         }
 
         $total = abs($qty) * $price;
-        $stmt = $pdo->prepare("INSERT INTO raw_material_movements (material_id,movement_date,movement_type,quantity,unit_price,total_amount,reference_type,description,created_by,created_at) VALUES (?,?,?,?,?,?,?,?,?,NOW())");
-        $stmt->execute([$mid, $movementDate, $movementType, $qty, $price, $total, $referenceType, $description, product_get_user_id()]);
+        $isAcquisition = $movementType === 'in';
+        if (!$isAcquisition) {$acquisitionType='other';$fundingSource='none';}
+        if ($isAcquisition && $acquisitionType !== 'purchase') {$fundingSource='none';$total=0;$price=0;}
+        try {
+            if ($fundingSource === 'company' && $accountId <= 0) throw new Exception('Pilih akun kas/bank perusahaan.');
+            if ($fundingSource === 'company') {
+                $accountCheck=$pdo->prepare("SELECT current_balance FROM finance_accounts WHERE id=:id AND status='active' LIMIT 1");$accountCheck->execute([':id'=>$accountId]);
+                $accountBalance=$accountCheck->fetchColumn();
+                if($accountBalance===false)throw new Exception('Akun kas/bank tidak aktif atau tidak ditemukan.');
+                if((float)$accountBalance<$total)throw new Exception('Saldo akun perusahaan tidak mencukupi untuk pembelian ini.');
+            }
+            if ($fundingSource === 'operational_fund' && $operationalFundId <= 0) throw new Exception('Pilih Dana Operasional.');
+            if ($fundingSource === 'personal' && $personalEmployeeId <= 0 && $personalName === '') throw new Exception('Pilih karyawan atau isi nama personal.');
+            if ($fundingSource === 'supplier_credit' && $supplierId <= 0) throw new Exception('Pilih supplier untuk pembelian tempo/hutang.');
+            if ($fundingSource === 'operational_fund') {
+                $fundCheck=$pdo->prepare("SELECT current_balance FROM operational_funds WHERE id=:id AND status='open' LIMIT 1");$fundCheck->execute([':id'=>$operationalFundId]);
+                if ((float)$fundCheck->fetchColumn() < $total) throw new Exception('Saldo Dana Operasional tidak mencukupi. Pilih Personal jika selisih merupakan talangan.');
+            }
+            $proofFile = product_upload_acquisition_proof('proof_file');
+            $pdo->beginTransaction();
+            $stmt = $pdo->prepare("INSERT INTO raw_material_movements (material_id,movement_date,movement_type,quantity,unit_price,total_amount,reference_type,acquisition_type,funding_source,account_id,operational_fund_id,personal_employee_id,personal_name,supplier_id,payment_method,reference_code,proof_file,description,created_by,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,NOW())");
+            $stmt->execute([$mid,$movementDate,$movementType,$qty,$price,$total,$referenceType,$acquisitionType,$fundingSource,$accountId?:null,$operationalFundId?:null,$personalEmployeeId?:null,$personalName?:null,$supplierId?:null,$paymentMethod,$referenceCode?:null,$proofFile,$description,product_get_user_id()]);
+            $movementId=(int)$pdo->lastInsertId();
 
-        if (in_array($movementType, ['in', 'return'], true)) {
-            $pdo->prepare("UPDATE raw_materials SET average_price = CASE WHEN (? > 0) THEN ? ELSE average_price END WHERE id=?")->execute([$price, $price, $mid]);
+            $fundDescription='Pembelian bahan '.$material['material_name'].($description!==''?' - '.$description:'');
+            if ($fundingSource === 'company') {
+                $transactionId=finance_upsert_transaction($pdo,'other','raw_material_movements',$movementId,'expense',null,$total,$fundDescription,'Material',$movementDate,$paymentMethod,$referenceCode?:('MAT-'.$movementId),product_get_user_id(),$accountId,$proofFile);
+                $pdo->prepare("UPDATE raw_material_movements SET transaction_id=:tx WHERE id=:id")->execute([':tx'=>$transactionId,':id'=>$movementId]);
+            } elseif ($fundingSource === 'operational_fund') {
+                opfund_add_movement($pdo,$operationalFundId,'expense',$total,$movementDate,null,$fundDescription,'product','raw_material_movements',$movementId,null,$paymentMethod,product_get_user_id());
+            } elseif (in_array($fundingSource,['personal','supplier_credit'],true)) {
+                $partyType=$fundingSource==='supplier_credit'?'supplier':($personalEmployeeId?'employee':'personal');
+                $partyId=$fundingSource==='supplier_credit'?$supplierId:($personalEmployeeId?:null);
+                if ($fundingSource==='supplier_credit') {$ps=$pdo->prepare("SELECT supplier_name FROM suppliers WHERE id=:id");$ps->execute([':id'=>$supplierId]);$partyName=(string)$ps->fetchColumn();}
+                elseif($personalEmployeeId){$ps=$pdo->prepare("SELECT full_name FROM employees WHERE id=:id");$ps->execute([':id'=>$personalEmployeeId]);$partyName=(string)$ps->fetchColumn();} else $partyName=$personalName;
+                $debtCode='MAT-'.date('YmdHis').'-'.random_int(10,99);
+                $debt=$pdo->prepare("INSERT INTO debts(debt_code,type,related_type,related_id,related_name,category,issue_date,amount,principal_amount,paid_amount,due_date,payment_method,proof_file,source_module,source_table,source_id,reference_code,status,description,created_by,created_at,updated_at) VALUES(:code,'debt',:party_type,:party_id,:party_name,'Pembelian Bahan',:issue_date,:amount,:principal_amount,0,:due_date,:method,:proof,'other','raw_material_movements',:source_id,:reference,'unpaid',:description,:user,NOW(),NOW())");
+                $debt->execute([':code'=>$debtCode,':party_type'=>$partyType,':party_id'=>$partyId,':party_name'=>$partyName,':issue_date'=>$movementDate,':amount'=>$total,':principal_amount'=>$total,':due_date'=>($_POST['due_date']??'')?:null,':method'=>$paymentMethod,':proof'=>$proofFile,':source_id'=>$movementId,':reference'=>$referenceCode?:('MAT-'.$movementId),':description'=>$fundDescription,':user'=>product_get_user_id()]);
+                $pdo->prepare("UPDATE raw_material_movements SET debt_id=:debt WHERE id=:id")->execute([':debt'=>(int)$pdo->lastInsertId(),':id'=>$movementId]);
+            }
+
+            if (in_array($movementType, ['in', 'return'], true) && $price>0) $pdo->prepare("UPDATE raw_materials SET average_price=? WHERE id=?")->execute([$price,$mid]);
+            product_recalc_material_stock($pdo,$mid);
+            $pdo->commit();
+            header('Location: movements.php?material_id='.$mid.'&success=1');exit;
+        } catch(Throwable $e) {
+            if($pdo->inTransaction())$pdo->rollBack();
+            $error=$e->getMessage();
         }
-        product_recalc_material_stock($pdo, $mid);
-        header('Location: movements.php?material_id=' . $mid . '&success=1');
-        exit;
     }
 }
+
+$accounts=$pdo->query("SELECT id,account_name,current_balance FROM finance_accounts WHERE status='active' ORDER BY is_default DESC,account_name")->fetchAll(PDO::FETCH_ASSOC);
+$operationalFunds=$pdo->query("SELECT id,fund_code,person_name,current_balance FROM operational_funds WHERE status='open' ORDER BY person_name")->fetchAll(PDO::FETCH_ASSOC);
+$employees=$pdo->query("SELECT id,full_name FROM employees WHERE employment_status='active' ORDER BY full_name")->fetchAll(PDO::FETCH_ASSOC);
+$suppliers=$pdo->query("SELECT id,supplier_name FROM suppliers WHERE status='active' ORDER BY supplier_name")->fetchAll(PDO::FETCH_ASSOC);
 
 $materials = $pdo->query("SELECT * FROM raw_materials WHERE status='active' ORDER BY material_name ASC")->fetchAll(PDO::FETCH_ASSOC);
 
@@ -84,8 +146,11 @@ $fMaterial = (int)($_GET['material_filter'] ?? 0);
 $where = [];
 $params = [];
 if ($q !== '') {
-    $where[] = "(r.material_name LIKE :q OR r.material_code LIKE :q OR m.description LIKE :q)";
-    $params[':q'] = '%' . $q . '%';
+    $where[] = "(r.material_name LIKE :q_name OR r.material_code LIKE :q_code OR m.description LIKE :q_description)";
+    $queryValue = '%' . $q . '%';
+    $params[':q_name'] = $queryValue;
+    $params[':q_code'] = $queryValue;
+    $params[':q_description'] = $queryValue;
 }
 if ($fType !== '') {
     $where[] = "m.movement_type = :type";
@@ -155,7 +220,7 @@ require_once __DIR__ . '/_style.php';
                         <div><h3 class="section-title">Tambah Mutasi Stok</h3><div class="section-subtitle">Catat bahan masuk, keluar, rusak, hilang, return, atau stock opname.</div></div>
                     </div>
                     <div class="section-body">
-                        <form method="post" class="row g-3">
+                        <form method="post" enctype="multipart/form-data" class="row g-3">
                             <div class="col-12">
                                 <label class="form-label">Bahan Baku</label>
                                 <select name="material_id" class="form-select" required>
@@ -202,6 +267,47 @@ require_once __DIR__ . '/_style.php';
                                     <option value="other">Lainnya</option>
                                 </select>
                             </div>
+                            <div class="col-12 acquisition-fields">
+                                <label class="form-label">Cara Bahan Diperoleh</label>
+                                <select name="acquisition_type" class="form-select" id="acquisitionType">
+                                    <option value="purchase">Dibeli</option>
+                                    <option value="free">Gratis / Diambil Tanpa Biaya</option>
+                                    <option value="donation">Donasi</option>
+                                    <option value="initial_stock">Stok Awal</option>
+                                    <option value="return">Retur Masuk</option>
+                                    <option value="other">Lainnya</option>
+                                </select>
+                            </div>
+                            <div class="col-12 purchase-fields">
+                                <label class="form-label">Sumber Dana Pembelian</label>
+                                <select name="funding_source" class="form-select" id="fundingSource">
+                                    <option value="company">Uang Perusahaan</option>
+                                    <option value="operational_fund">Dana Operasional</option>
+                                    <option value="personal">Talangan Personal / Karyawan</option>
+                                    <option value="supplier_credit">Hutang / Tempo Supplier</option>
+                                </select>
+                            </div>
+                            <div class="col-12 funding-box" data-funding="company">
+                                <label class="form-label">Akun Kas/Bank Perusahaan</label>
+                                <select name="account_id" class="form-select"><option value="">Pilih akun</option><?php foreach($accounts as $a):?><option value="<?=$a['id'];?>"><?=product_safe($a['account_name']);?> · <?=product_money($a['current_balance']);?></option><?php endforeach;?></select>
+                            </div>
+                            <div class="col-12 funding-box d-none" data-funding="operational_fund">
+                                <label class="form-label">Dana Operasional</label>
+                                <select name="operational_fund_id" class="form-select"><option value="">Pilih pemegang dana</option><?php foreach($operationalFunds as $f):?><option value="<?=$f['id'];?>"><?=product_safe($f['fund_code'].' · '.$f['person_name']);?> · <?=product_money($f['current_balance']);?></option><?php endforeach;?></select>
+                            </div>
+                            <div class="col-12 funding-box d-none" data-funding="personal">
+                                <label class="form-label">Karyawan yang Menalangi</label>
+                                <select name="personal_employee_id" class="form-select mb-2"><option value="">Bukan karyawan / isi nama</option><?php foreach($employees as $e):?><option value="<?=$e['id'];?>"><?=product_safe($e['full_name']);?></option><?php endforeach;?></select>
+                                <input name="personal_name" class="form-control" placeholder="Nama personal jika bukan karyawan">
+                            </div>
+                            <div class="col-12 funding-box d-none" data-funding="supplier_credit">
+                                <label class="form-label">Supplier</label>
+                                <select name="supplier_id" class="form-select"><option value="">Pilih supplier</option><?php foreach($suppliers as $s):?><option value="<?=$s['id'];?>"><?=product_safe($s['supplier_name']);?></option><?php endforeach;?></select>
+                                <label class="form-label mt-2">Jatuh Tempo</label><input type="date" name="due_date" class="form-control">
+                            </div>
+                            <div class="col-6 purchase-fields"><label class="form-label">Metode Pembayaran</label><select name="payment_method" class="form-select"><?=master_options($pdo,'payment_method','cash');?></select></div>
+                            <div class="col-6 purchase-fields"><label class="form-label">Kode Invoice/Referensi</label><input name="reference_code" class="form-control" placeholder="Opsional"></div>
+                            <div class="col-12 acquisition-fields"><label class="form-label">Bukti / Nota</label><input type="file" name="proof_file" class="form-control" accept="image/jpeg,image/png,image/webp,application/pdf"></div>
                             <div class="col-12">
                                 <label class="form-label">Keterangan</label>
                                 <textarea name="description" class="form-control" rows="3" placeholder="Contoh: Stok awal gudang / bahan dipakai untuk produksi / hasil donasi hotel"></textarea>
@@ -262,17 +368,18 @@ require_once __DIR__ . '/_style.php';
                     <div class="table-box table-responsive">
                         <table class="table table-hover align-middle mb-0">
                             <thead>
-                                <tr><th>Tanggal</th><th>Bahan</th><th>Jenis</th><th>Referensi</th><th>Qty</th><th>Harga</th><th>Nilai</th><th>Keterangan</th></tr>
+                                <tr><th>Tanggal</th><th>Bahan</th><th>Jenis</th><th>Perolehan & Dana</th><th>Referensi</th><th>Qty</th><th>Harga</th><th>Nilai</th><th>Keterangan</th></tr>
                             </thead>
                             <tbody>
                             <?php if (!$movements): ?>
-                                <tr><td colspan="8"><div class="empty-state">Belum ada mutasi sesuai filter.</div></td></tr>
+                                <tr><td colspan="9"><div class="empty-state">Belum ada mutasi sesuai filter.</div></td></tr>
                             <?php endif; ?>
                             <?php foreach ($movements as $r): ?>
                                 <tr>
                                     <td><strong><?= product_safe($r['movement_date']); ?></strong></td>
                                     <td><strong><?= product_safe($r['material_name']); ?></strong><div class="small-muted"><?= product_safe($r['material_code']); ?> · <?= product_safe($r['category']); ?></div></td>
                                     <td><span class="mv-badge <?= movement_class($r['movement_type']); ?>"><?= movement_label($r['movement_type']); ?></span></td>
+                                    <td><strong><?=product_safe(ucwords(str_replace('_',' ',$r['acquisition_type']??'-')));?></strong><div class="small-muted"><?=product_safe(ucwords(str_replace('_',' ',$r['funding_source']??'none')));?></div></td>
                                     <td><span class="small-muted"><?= product_safe(ucwords(str_replace('_',' ', $r['reference_type'] ?? '-'))); ?></span></td>
                                     <td><strong><?= product_num($r['quantity']); ?></strong> <?= product_safe($r['unit']); ?></td>
                                     <td><?= product_money($r['unit_price']); ?></td>
@@ -288,4 +395,7 @@ require_once __DIR__ . '/_style.php';
         </div>
     </div>
 </main>
+<script>
+(()=>{const movement=document.getElementById('movementType'),acquisition=document.getElementById('acquisitionType'),funding=document.getElementById('fundingSource');function render(){const incoming=movement?.value==='in',purchase=incoming&&acquisition?.value==='purchase';document.querySelectorAll('.acquisition-fields').forEach(el=>el.classList.toggle('d-none',!incoming));document.querySelectorAll('.purchase-fields').forEach(el=>el.classList.toggle('d-none',!purchase));document.querySelectorAll('.funding-box').forEach(el=>el.classList.toggle('d-none',!purchase||el.dataset.funding!==funding?.value));}movement?.addEventListener('change',render);acquisition?.addEventListener('change',render);funding?.addEventListener('change',render);render();})();
+</script>
 <?php require_once __DIR__ . '/../../includes/footer.php'; ?>

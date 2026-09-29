@@ -141,6 +141,7 @@ $stmt = $pdo->query("
         COALESCE(term.paid_terms, 0) AS paid_terms,
         COALESCE(term.total_term_amount, 0) AS total_term_amount,
         COALESCE(term.paid_term_amount, 0) AS paid_term_amount,
+        COALESCE(term.paid_term_received, 0) AS paid_term_received,
         COALESCE(fund.total_fund_amount, 0) AS total_fund_amount,
         COALESCE(tx.total_expense, 0) AS total_expense,
         COALESCE(tx.manual_income, 0) AS manual_income,
@@ -153,7 +154,9 @@ $stmt = $pdo->query("
                COUNT(*) AS total_terms,
                SUM(CASE WHEN status = 'paid' THEN 1 ELSE 0 END) AS paid_terms,
                SUM(amount) AS total_term_amount,
-               SUM(CASE WHEN status = 'paid' THEN amount ELSE 0 END) AS paid_term_amount
+               SUM(CASE WHEN status = 'paid' THEN amount ELSE 0 END) AS paid_term_amount,
+               SUM(CASE WHEN status = 'paid' THEN CASE WHEN received_amount > 0 THEN received_amount ELSE GREATEST(amount - COALESCE(tax_amount,0),0) END ELSE 0 END) AS paid_term_received
+               ,SUM(CASE WHEN status = 'paid' THEN COALESCE(tax_amount,0) ELSE 0 END) AS paid_term_tax
         FROM project_payment_terms
         GROUP BY project_id
     ) term ON term.project_id = p.id
@@ -166,7 +169,7 @@ $stmt = $pdo->query("
     LEFT JOIN (
         SELECT project_id,
                SUM(CASE WHEN transaction_type = 'expense' THEN amount ELSE 0 END) AS total_expense,
-               SUM(CASE WHEN transaction_type = 'income' AND source_module = 'manual' THEN amount ELSE 0 END) AS manual_income
+               SUM(CASE WHEN transaction_type = 'income' AND COALESCE(source_module, '') <> 'term' AND category <> 'Termin Pembayaran' THEN amount ELSE 0 END) AS manual_income
         FROM project_transactions
         GROUP BY project_id
     ) tx ON tx.project_id = p.id
@@ -191,6 +194,8 @@ $totalCashPosition = 0;
 $totalRealProfit = 0;
 $totalNegativeCashProjects = 0;
 $totalNegativeCashAmount = 0;
+$totalTermTax = 0;
+$profitProjects = $balanceProjects = $minusProjects = 0;
 $negativeCashProjects = [];
 $chartProjectNames = [];
 $chartContract = [];
@@ -211,7 +216,7 @@ foreach ($projects as $p) {
     if ($p['status'] === 'cancelled') $totalCancelled++;
 
     $contract = (float) $p['contract_value'];
-    $realIncome = (float) $p['paid_term_amount'] + (float) ($p['manual_income'] ?? 0);
+    $realIncome = (float) $p['paid_term_received'] + (float) ($p['manual_income'] ?? 0);
     $fundAmount = (float) ($p['total_fund_amount'] ?? 0);
     $expense = (float) $p['total_expense'];
     $receivable = max($contract - $realIncome, 0);
@@ -237,6 +242,12 @@ foreach ($projects as $p) {
     $totalCashPosition += $cashPosition;
     $totalRealProfit += $realProfit;
     $totalMargin += $margin;
+    $totalTermTax += (float)($p['paid_term_tax'] ?? 0);
+    if ($p['status'] !== 'completed') {
+        if ($realProfit > 0.01) $profitProjects++;
+        elseif ($realProfit < -0.01) $minusProjects++;
+        else $balanceProjects++;
+    }
 
     $chartProjectNames[] = $p['project_name'];
     $chartContract[] = $contract;
@@ -403,9 +414,6 @@ require_once __DIR__ . '/../../includes/sidebar.php';
     .panel-title { display:flex; justify-content:space-between; align-items:center; gap:12px; margin-bottom:16px; }
     .panel-title h5 { font-weight:900; letter-spacing:-.02em; margin:0; }
     .panel-title small { color:var(--nkr-muted); }
-    .guide-step { display:flex; gap:12px; padding:13px; border-radius:18px; background:#f8fafc; margin-bottom:10px; border:1px solid rgba(15,23,42,.04); }
-    .guide-step i { width:34px; height:34px; border-radius:12px; display:inline-flex; align-items:center; justify-content:center; background:#e8f5ee; color:#0f6b4b; flex:0 0 auto; }
-
     .project-title { font-weight:900; color:#111827; letter-spacing:-.01em; }
     .muted-small { color:#6b7280; font-size:12px; }
     .table { --bs-table-hover-bg: #f8fafc; }
@@ -434,7 +442,9 @@ require_once __DIR__ . '/../../includes/sidebar.php';
     .term-calendar-title { font-size:19px; font-weight:950; color:#111827; letter-spacing:.01em; }
     .term-calendar-grid { display:grid; grid-template-columns:repeat(7,1fr); gap:8px; }
     .term-weekday { text-align:center; color:#64748b; font-size:12px; font-weight:800; padding-bottom:5px; }
-    .term-day { position:relative; min-height:46px; border-radius:14px; background:#fbfcfe; border:1px solid rgba(15,23,42,.05); display:flex; align-items:center; justify-content:center; font-weight:800; color:#475569; }
+    .term-day { position:relative; width:100%; min-height:46px; border-radius:14px; background:#fbfcfe; border:1px solid rgba(15,23,42,.05); display:flex; align-items:center; justify-content:center; font-weight:800; color:#475569; transition:.18s ease; }
+    button.term-day { cursor:pointer; }
+    button.term-day:hover, button.term-day:focus-visible { transform:translateY(-2px); border-color:rgba(15,107,75,.35); box-shadow:0 10px 22px rgba(15,23,42,.10); outline:none; }
     .term-day.empty { background:transparent; border-color:transparent; }
     .term-day.today { outline:2px solid #2563eb; color:#111827; }
     .term-day.has-term { background:#fff; box-shadow:0 8px 20px rgba(15,23,42,.06); }
@@ -472,7 +482,7 @@ require_once __DIR__ . '/../../includes/sidebar.php';
     <?php endif; ?>
 
     <div class="kpi-grid">
-        <div class="kpi-card">
+        <div class="kpi-card" role="button" data-bs-toggle="modal" data-bs-target="#contractSummaryModal">
             <div class="kpi-top">
                 <div><div class="kpi-label">Nilai Kontrak</div><div class="kpi-number"><?= rupiah($totalContractValue); ?></div></div>
                 <div class="kpi-icon green"><i class="bi bi-file-earmark-text"></i></div>
@@ -488,7 +498,7 @@ require_once __DIR__ . '/../../includes/sidebar.php';
         </div>
         <div class="kpi-card">
             <div class="kpi-top">
-                <div><div class="kpi-label">Pendapatan Riil</div><div class="kpi-number"><?= rupiah($totalIncome); ?></div></div>
+                <div><div class="kpi-label">Total Pemasukan Project</div><div class="kpi-number"><?= rupiah($totalIncome); ?></div></div>
                 <div class="kpi-icon blue"><i class="bi bi-bank"></i></div>
             </div>
             <div class="kpi-note">Termin paid + income manual.</div>
@@ -505,19 +515,19 @@ require_once __DIR__ . '/../../includes/sidebar.php';
     <div class="kpi-grid">
         <div class="kpi-card">
             <div class="kpi-top">
-                <div><div class="kpi-label">Pengeluaran Riil</div><div class="kpi-number"><?= rupiah($totalExpense); ?></div></div>
+                <div><div class="kpi-label">Total Biaya Project</div><div class="kpi-number"><?= rupiah($totalExpense); ?></div></div>
                 <div class="kpi-icon red"><i class="bi bi-cash-coin"></i></div>
             </div>
             <div class="kpi-note">Transaksi expense + biaya pekerja.</div>
         </div>
         <div class="kpi-card">
             <div class="kpi-top">
-                <div><div class="kpi-label">Pendanaan</div><div class="kpi-number"><?= rupiah($totalFundAmount); ?></div></div>
+                <div><div class="kpi-label">Selisih Pajak Termin</div><div class="kpi-number"><?= rupiah($totalTermTax); ?></div></div>
                 <div class="kpi-icon purple"><i class="bi bi-safe2"></i></div>
             </div>
-            <div class="kpi-note">Dana terpakai otomatis dari transaksi project.</div>
+            <div class="kpi-note">Total pajak yang dipotong dari termin paid.</div>
         </div>
-        <div class="kpi-card">
+        <div class="kpi-card" role="button" data-bs-toggle="modal" data-bs-target="#projectSummaryModal">
             <div class="kpi-top">
                 <div><div class="kpi-label">Total Project</div><div class="kpi-number"><?= (int)$totalProject; ?></div></div>
                 <div class="kpi-icon blue"><i class="bi bi-folder2-open"></i></div>
@@ -526,16 +536,16 @@ require_once __DIR__ . '/../../includes/sidebar.php';
         </div>
         <div class="kpi-card">
             <div class="kpi-top">
-                <div><div class="kpi-label">Estimasi Margin</div><div class="kpi-number <?= $totalMargin >= 0 ? 'cash-positive' : 'cash-negative'; ?>"><?= rupiah($totalMargin); ?></div></div>
-                <div class="kpi-icon <?= $totalMargin >= 0 ? 'green' : 'red'; ?>"><i class="bi bi-graph-up-arrow"></i></div>
+                <div><div class="kpi-label">Perkiraan Keuntungan</div><div class="kpi-number <?= $totalRealProfit >= 0 ? 'cash-positive' : 'cash-negative'; ?>"><?= rupiah($totalRealProfit); ?></div></div>
+                <div class="kpi-icon <?= $totalRealProfit >= 0 ? 'green' : 'red'; ?>"><i class="bi bi-graph-up-arrow"></i></div>
             </div>
-            <div class="kpi-note">Nilai kontrak - pengeluaran riil.</div>
+            <div class="kpi-note">Dana masuk riil setelah pajak - biaya riil.</div>
         </div>
     </div>
 
     <div class="risk-grid">
         <div class="risk-card danger">
-            <div class="risk-title">Termin Overdue</div>
+            <div class="risk-title">Tagihan Terlambat Dibayar</div>
             <div class="risk-number"><?= (int) $totalOverdueTerms; ?></div>
             <div class="risk-sub"><?= rupiah($totalOverdueAmount); ?> perlu ditagih</div>
         </div>
@@ -614,14 +624,14 @@ require_once __DIR__ . '/../../includes/sidebar.php';
                             if ($dateString === date('Y-m-d')) { $dayClass .= ' today'; }
                             $tooltip = $items ? implode(' | ', array_map(fn($x) => $x['project_name'] . ' - ' . $x['term_name'] . ' (' . rupiah($x['amount']) . ')', $items)) : '';
                         ?>
-                        <div class="term-day <?= e(trim($dayClass)); ?>" title="<?= e($tooltip); ?>">
+                        <button type="button" class="term-day <?= e(trim($dayClass)); ?>" title="<?= e($tooltip ?: 'Tidak ada termin'); ?>" data-calendar-date="<?= e($dateString); ?>" data-calendar-items="<?= e(json_encode($items, JSON_UNESCAPED_UNICODE)); ?>">
                             <?= $day; ?>
                             <?php if ($items): ?><span class="term-dot"></span><?php endif; ?>
-                        </div>
+                        </button>
                     <?php endfor; ?>
                 </div>
                 <div class="d-flex flex-wrap gap-3 mt-3 muted-small">
-                    <span><i class="legend-dot" style="background:#ef4444"></i>Overdue</span>
+                    <span><i class="legend-dot" style="background:#ef4444"></i>Terlambat dibayar</span>
                     <span><i class="legend-dot" style="background:#f59e0b"></i>Akan jatuh tempo</span>
                     <span><i class="legend-dot" style="background:#16a34a"></i>Sudah dibayar</span>
                 </div>
@@ -634,7 +644,7 @@ require_once __DIR__ . '/../../includes/sidebar.php';
                         <h5>Prioritas Termin & Operasional</h5>
                         <small>Termin overdue, jatuh tempo 7 hari, saldo negatif, dan pekerja aktif.</small>
                     </div>
-                    <span class="kpi-pill <?= $totalOverdueTerms > 0 ? 'pill-risk' : 'pill-live'; ?>"><?= $totalOverdueTerms > 0 ? (int)$totalOverdueTerms . ' overdue' : 'Terkendali'; ?></span>
+                    <span class="kpi-pill <?= $totalOverdueTerms > 0 ? 'pill-risk' : 'pill-live'; ?>"><?= $totalOverdueTerms > 0 ? (int)$totalOverdueTerms . ' terlambat' : 'Terkendali'; ?></span>
                 </div>
                 <div class="term-priority-list">
                     <?php if ($priorityTerms): ?>
@@ -647,7 +657,7 @@ require_once __DIR__ . '/../../includes/sidebar.php';
                                 </div>
                                 <div class="text-end">
                                     <div class="fw-bold <?= $isOverdue ? 'text-danger' : 'text-warning'; ?>"><?= rupiah($term['amount']); ?></div>
-                                    <small class="badge rounded-pill <?= $isOverdue ? 'bg-danger-subtle text-danger' : 'bg-warning-subtle text-warning'; ?>"><?= $isOverdue ? 'Overdue' : '7 hari'; ?></small>
+                                    <small class="badge rounded-pill <?= $isOverdue ? 'bg-danger-subtle text-danger' : 'bg-warning-subtle text-warning'; ?>"><?= $isOverdue ? 'Terlambat Dibayar' : '7 hari'; ?></small>
                                 </div>
                             </div>
                         <?php endforeach; ?>
@@ -684,16 +694,7 @@ require_once __DIR__ . '/../../includes/sidebar.php';
     </div>
 
     <div class="row g-4 mb-4">
-        <div class="col-xl-4">
-            <div class="ops-card">
-                <h5 class="fw-bold mb-3"><i class="bi bi-info-circle me-1"></i> Panduan Halaman</h5>
-                <div class="guide-step"><i class="bi bi-1-circle"></i><div><b>Buat Project</b><br><small class="text-muted">Isi client, leader, tipe project, nilai kontrak, dan periode.</small></div></div>
-                <div class="guide-step"><i class="bi bi-2-circle"></i><div><b>Lengkapi Detail</b><br><small class="text-muted">Masuk ke Detail untuk termin, pendanaan, transaksi, pekerja, aset, dan dokumen.</small></div></div>
-                <div class="guide-step"><i class="bi bi-3-circle"></i><div><b>Pantau Uang Riil</b><br><small class="text-muted">Fokus pada pendapatan riil, pengeluaran riil, saldo project, dan piutang client.</small></div></div>
-                <div class="guide-step mb-0"><i class="bi bi-people"></i><div><b>Pekerja</b><br><small class="text-muted">Internal, freelance, dan borongan dicatat di halaman Detail Project.</small></div></div>
-            </div>
-        </div>
-        <div class="col-xl-8">
+        <div class="col-12">
             <div class="ops-card">
                 <div class="d-flex justify-content-between align-items-center flex-wrap gap-2 mb-3">
                     <div>
@@ -710,7 +711,7 @@ require_once __DIR__ . '/../../includes/sidebar.php';
                                 <th>Project</th>
                                 <th>Client / Leader</th>
                                 <th>Timeline</th>
-                                <th>Cash & Margin</th>
+                                <th>Keuangan Project</th>
                                 <th>Termin</th>
                                 <th>Status</th>
                                 <th class="text-end">Aksi</th>
@@ -721,14 +722,15 @@ require_once __DIR__ . '/../../includes/sidebar.php';
                                 <?php foreach ($projects as $p): ?>
                                     <?php
                                     $termProgress = ((int) $p['total_terms'] > 0) ? (((int) $p['paid_terms'] / (int) $p['total_terms']) * 100) : 0;
-                                    $rowRealIncome = (float) $p['paid_term_amount'] + (float) ($p['manual_income'] ?? 0);
+                                    $rowRealIncome = (float) $p['paid_term_received'] + (float) ($p['manual_income'] ?? 0);
                                     $rowFundAmount = (float) ($p['total_fund_amount'] ?? 0);
                                     $rowExpense = (float) $p['total_expense'];
                                     $rowCashPosition = ($rowRealIncome + $rowFundAmount) - $rowExpense;
                                     $rowMargin = (float) $p['contract_value'] - $rowExpense;
                                     $rowReceivable = max((float)$p['contract_value'] - $rowRealIncome, 0);
                                     ?>
-                                    <tr>
+                                    <?php $rowClass=$p['status']==='completed'?'table-light':($rowCashPosition<0?'table-danger':($rowCashPosition>0?'table-success':'table-warning')); ?>
+                                    <tr class="<?= $rowClass; ?>">
                                         <td>
                                             <div class="project-title"><?= htmlspecialchars($p['project_name']); ?></div>
                                             <div class="muted-small"><?= htmlspecialchars($p['project_code'] ?: 'Tanpa kode'); ?></div>
@@ -752,11 +754,11 @@ require_once __DIR__ . '/../../includes/sidebar.php';
                                         <td>
                                             <div class="money-line">
                                                 <small>Kontrak <b class="text-dark"><?= rupiah($p['contract_value']); ?></b></small>
-                                                <small>Pendapatan <b class="text-success"><?= rupiah($rowRealIncome); ?></b></small>
+                                                <small>Pemasukan <b class="text-success"><?= rupiah($rowRealIncome); ?></b></small>
                                                 <small>Piutang <b class="text-warning"><?= rupiah($rowReceivable); ?></b></small>
-                                                <small>Pengeluaran <b><?= rupiah($rowExpense); ?></b></small>
+                                                <small>Biaya <b><?= rupiah($rowExpense); ?></b></small>
                                                 <small>Saldo <b class="<?= $rowCashPosition >= 0 ? 'cash-positive' : 'cash-negative'; ?>"><?= rupiah($rowCashPosition); ?></b></small>
-                                                <small>Margin <b class="<?= $rowMargin >= 0 ? 'cash-positive' : 'cash-negative'; ?>"><?= rupiah($rowMargin); ?></b></small>
+                                                <small>Perkiraan keuntungan <b class="<?= $rowMargin >= 0 ? 'cash-positive' : 'cash-negative'; ?>"><?= rupiah($rowMargin); ?></b></small>
                                             </div>
                                         </td>
                                         <td style="min-width:160px;">
@@ -767,11 +769,12 @@ require_once __DIR__ . '/../../includes/sidebar.php';
                                         <td><?= nkr_status_badge($p['status']); ?></td>
                                         <td class="text-end" style="min-width:190px;">
                                             <a href="<?= base_url('pages/projects/detail.php?id=' . $p['id']); ?>" class="btn btn-sm btn-outline-success rounded-pill mb-1"><i class="bi bi-eye"></i></a>
+                                            <a href="<?= base_url('pages/projects/tracking.php?project_id=' . $p['id']); ?>" class="btn btn-sm btn-outline-dark rounded-pill mb-1" title="Tracking"><i class="bi bi-calendar-check"></i></a>
                                             <button type="button" class="btn btn-sm btn-outline-primary rounded-pill mb-1" data-bs-toggle="modal" data-bs-target="#editProjectModal<?= (int) $p['id']; ?>"><i class="bi bi-pencil-square"></i></button>
-                                            <?php if ($p['status'] !== 'cancelled' && $p['status'] !== 'completed'): ?>
+                                            <?php if ($p['status'] !== 'cancelled' && $p['status'] !== 'completed' && $rowRealIncome <= 0): ?>
                                                 <a href="<?= base_url('pages/projects/cancel.php?id=' . $p['id']); ?>" class="btn btn-sm btn-outline-warning rounded-pill mb-1" onclick="return confirm('Batalkan project ini?')"><i class="bi bi-x-circle"></i></a>
                                             <?php endif; ?>
-                                            <a href="<?= base_url('pages/projects/delete.php?id=' . $p['id']); ?>" class="btn btn-sm btn-outline-danger rounded-pill mb-1"><i class="bi bi-trash"></i></a>
+                                            <?php if ($p['status']==='planning' || ((int)$p['total_terms']===0 && $rowExpense<=0 && $rowRealIncome<=0)): ?><a href="<?= base_url('pages/projects/delete.php?id=' . $p['id']); ?>" class="btn btn-sm btn-outline-danger rounded-pill mb-1"><i class="bi bi-trash"></i></a><?php endif; ?>
                                         </td>
                                     </tr>
                                 <?php endforeach; ?>
@@ -785,6 +788,9 @@ require_once __DIR__ . '/../../includes/sidebar.php';
         </div>
     </div>
 </main>
+
+<div class="modal fade" id="contractSummaryModal"><div class="modal-dialog modal-lg"><div class="modal-content"><div class="modal-header"><h5 class="modal-title fw-bold">Ringkasan Nilai Kontrak</h5><button class="btn-close" data-bs-dismiss="modal"></button></div><div class="modal-body"><div class="table-responsive"><table class="table"><thead><tr><th>Project</th><th>Client</th><th class="text-end">Nilai Kontrak</th></tr></thead><tbody><?php foreach($projects as $p): ?><tr><td><?= e($p['project_name']); ?></td><td><?= e($p['client_name']??'-'); ?></td><td class="text-end fw-bold"><?= rupiah($p['contract_value']); ?></td></tr><?php endforeach; ?></tbody><tfoot><tr><th colspan="2">Total</th><th class="text-end"><?= rupiah($totalContractValue); ?></th></tr></tfoot></table></div></div></div></div></div>
+<div class="modal fade" id="projectSummaryModal"><div class="modal-dialog"><div class="modal-content"><div class="modal-header"><h5 class="modal-title fw-bold">Ringkasan Kondisi Project</h5><button class="btn-close" data-bs-dismiss="modal"></button></div><div class="modal-body"><div class="row g-3 text-center"><div class="col-6"><div class="border rounded-4 p-3"><div class="text-success fs-3 fw-bold"><?= $profitProjects; ?></div><small>Project Profit</small></div></div><div class="col-6"><div class="border rounded-4 p-3"><div class="text-warning fs-3 fw-bold"><?= $balanceProjects; ?></div><small>Project Balance</small></div></div><div class="col-6"><div class="border rounded-4 p-3"><div class="text-danger fs-3 fw-bold"><?= $minusProjects; ?></div><small>Project Minus</small></div></div><div class="col-6"><div class="border rounded-4 p-3"><div class="fs-3 fw-bold"><?= $totalCompleted; ?></div><small>Project Selesai</small></div></div></div></div></div></div></div>
 
 <div class="modal fade" id="createProjectModal" tabindex="-1" aria-hidden="true">
     <div class="modal-dialog modal-xl modal-dialog-scrollable">
@@ -862,6 +868,18 @@ require_once __DIR__ . '/../../includes/sidebar.php';
 </div>
 <?php endforeach; ?>
 
+<div class="modal fade" id="calendarTermModal" tabindex="-1" aria-hidden="true">
+    <div class="modal-dialog modal-dialog-centered">
+        <div class="modal-content">
+            <div class="modal-header border-0 pb-0">
+                <div><h5 class="modal-title fw-bold">Termin Project</h5><small class="text-muted" id="calendarSelectedDate"></small></div>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body"><div id="calendarTermList"></div></div>
+        </div>
+    </div>
+</div>
+
 <script src="<?= base_url('assets/vendor/chartjs/chart.umd.js'); ?>"></script>
 <script>
 document.addEventListener('DOMContentLoaded', function () {
@@ -883,6 +901,58 @@ document.addEventListener('DOMContentLoaded', function () {
         input.addEventListener('input', function() { this.value = moneyFormat(this.value); });
     });
 
+    const calendarModalElement = document.getElementById('calendarTermModal');
+    const calendarDateLabel = document.getElementById('calendarSelectedDate');
+    const calendarTermList = document.getElementById('calendarTermList');
+    const projectDetailBase = <?= json_encode(base_url('pages/projects/detail.php')); ?>;
+    if (calendarModalElement && calendarDateLabel && calendarTermList) {
+        const calendarModal = bootstrap.Modal.getOrCreateInstance(calendarModalElement);
+        document.querySelectorAll('[data-calendar-date]').forEach(function (dayButton) {
+            dayButton.addEventListener('click', function () {
+                const selectedDate = new Date(this.dataset.calendarDate + 'T00:00:00');
+                let items = [];
+                try { items = JSON.parse(this.dataset.calendarItems || '[]'); } catch (error) { items = []; }
+                calendarDateLabel.textContent = new Intl.DateTimeFormat('id-ID', { dateStyle: 'full' }).format(selectedDate);
+                calendarTermList.replaceChildren();
+
+                if (!items.length) {
+                    const emptyState = document.createElement('div');
+                    emptyState.className = 'text-center text-muted py-4';
+                    emptyState.textContent = 'Tidak ada termin pada tanggal ini.';
+                    calendarTermList.appendChild(emptyState);
+                } else {
+                    items.forEach(function (item) {
+                        const link = document.createElement('a');
+                        link.href = projectDetailBase + '?id=' + encodeURIComponent(item.project_id) + '&tab=terms';
+                        link.className = 'd-flex justify-content-between align-items-center gap-3 p-3 mb-2 rounded-4 border text-decoration-none text-dark';
+
+                        const info = document.createElement('div');
+                        const name = document.createElement('div');
+                        name.className = 'fw-bold';
+                        name.textContent = item.term_name;
+                        const project = document.createElement('small');
+                        project.className = 'text-muted';
+                        project.textContent = item.project_name;
+                        info.append(name, project);
+
+                        const amount = document.createElement('div');
+                        amount.className = 'text-end';
+                        const value = document.createElement('div');
+                        value.className = 'fw-bold text-success';
+                        value.textContent = 'Rp ' + new Intl.NumberFormat('id-ID').format(Number(item.amount) || 0);
+                        const status = document.createElement('small');
+                        status.className = 'text-muted text-capitalize';
+                        status.textContent = item.status;
+                        amount.append(value, status);
+                        link.append(info, amount);
+                        calendarTermList.appendChild(link);
+                    });
+                }
+                calendarModal.show();
+            });
+        });
+    }
+
     const search = document.getElementById('projectSearch');
     if (search) {
         search.addEventListener('keyup', function() {
@@ -901,8 +971,8 @@ document.addEventListener('DOMContentLoaded', function () {
                 labels: <?= json_encode($chartProjectNames); ?>,
                 datasets: [
                     { label: 'Nilai Kontrak', data: <?= json_encode($chartContract); ?>, tension: .35, borderWidth: 3, fill: false },
-                    { label: 'Pendapatan Riil', data: <?= json_encode($chartRealIncome); ?>, tension: .35, borderWidth: 3, fill: false },
-                    { label: 'Pengeluaran Riil', data: <?= json_encode($chartExpense); ?>, tension: .35, borderWidth: 3, fill: false },
+                    { label: 'Total Pemasukan Project', data: <?= json_encode($chartRealIncome); ?>, tension: .35, borderWidth: 3, fill: false },
+                    { label: 'Total Biaya Project', data: <?= json_encode($chartExpense); ?>, tension: .35, borderWidth: 3, fill: false },
                     { label: 'Saldo Project', data: <?= json_encode($chartCashPosition); ?>, tension: .35, borderWidth: 3, fill: false }
                 ]
             },

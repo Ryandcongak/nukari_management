@@ -14,12 +14,21 @@ Konfigurasi bawaan mengikuti MAMP lokal: Apache `8888`, MySQL `8889`, database `
 
 1. Nyalakan Apache dan MySQL dari MAMP.
 2. Pastikan database `nukari_management` tersedia.
-3. Jalankan `database/migrations/001_local_foundation.sql` melalui phpMyAdmin.
-4. Buka `http://localhost:8888/nukari_management/`.
+3. Untuk database lama yang struktur 001–015 sudah lengkap, catat baseline satu kali: `/Applications/MAMP/bin/php/php8.2.0/bin/php scripts/migrate.php --baseline`. Perintah ini membaseline 001–015 lalu langsung menerapkan migrasi sesudahnya.
+4. Untuk pembaruan berikutnya, jalankan `/Applications/MAMP/bin/php/php8.2.0/bin/php scripts/migrate.php` agar hanya migrasi baru yang diterapkan.
+5. Buka `http://localhost:8888/nukari_management/`.
 
 Untuk instalasi baru, file dump lokal `nukari_management.sql` dapat diimpor terlebih dahulu melalui phpMyAdmin. Dump database sengaja diabaikan oleh Git karena berisi data operasional dan hash akun; file tersebut tetap tersimpan di komputer lokal.
 
+Jangan menjalankan file migrasi lama satu per satu pada database aktif. Tabel `schema_migrations` menyimpan versi dan checksum sehingga migrasi yang sudah tercatat tidak dijalankan ulang. Opsi `--baseline` hanya untuk database lama yang struktur 001–015 sudah tersedia.
+
 Konfigurasi bawaan tetap kompatibel dengan MAMP. Nilainya dapat ditimpa melalui environment variables yang tercantum di `.env.example`; aplikasi tidak membaca file `.env` secara otomatis.
+
+## Cloudflare Tunnel dan hosting
+
+Aplikasi mendeteksi HTTPS, hostname, serta subpath dari request dan header reverse proxy secara otomatis. Untuk deployment production, konfigurasi yang paling deterministik adalah menetapkan `NUKARI_BASE_URL` pada environment Apache/PHP ke URL publik lengkap, misalnya `https://management.example.com` atau `https://example.com/nukari`. Jangan tambahkan garis miring di akhir.
+
+Untuk Cloudflare Tunnel, arahkan service ke origin MAMP, misalnya `http://localhost:8888`. Bila aplikasi masih berada di document root MAMP sebagai folder `nukari_management`, URL publiknya menggunakan path `/nukari_management/`. Alternatif yang lebih bersih adalah mengatur virtual host Apache dengan document root langsung ke folder project lalu menggunakan domain tanpa subpath.
 
 ## Role dan izin perubahan data
 
@@ -85,4 +94,7 @@ Absensi hasil impor dapat ditambah, dikoreksi, atau dihapus per karyawan dari ha
 
 ```sh
 find . -path './vendor' -prune -o -name '*.php' -type f -print0 | xargs -0 -n1 php -l
+php scripts/check_code_regressions.php
+php scripts/test_attendance_rules.php
+/Applications/MAMP/bin/php/php8.2.0/bin/php scripts/smoke_read_pages.php
 ```

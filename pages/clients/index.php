@@ -9,8 +9,13 @@ $error = $_GET['error'] ?? '';
 $where = '';
 $params = [];
 if ($keyword !== '') {
-    $where = "WHERE client_name LIKE :keyword OR contact_person LIKE :keyword OR phone LIKE :keyword OR email LIKE :keyword OR address LIKE :keyword";
-    $params[':keyword'] = '%' . $keyword . '%';
+    $where = "WHERE client_name LIKE :keyword_name OR contact_person LIKE :keyword_contact OR phone LIKE :keyword_phone OR email LIKE :keyword_email OR address LIKE :keyword_address";
+    $keywordValue = '%' . $keyword . '%';
+    $params[':keyword_name'] = $keywordValue;
+    $params[':keyword_contact'] = $keywordValue;
+    $params[':keyword_phone'] = $keywordValue;
+    $params[':keyword_email'] = $keywordValue;
+    $params[':keyword_address'] = $keywordValue;
 }
 
 $stmt = $pdo->prepare("SELECT * FROM clients $where ORDER BY client_name ASC");

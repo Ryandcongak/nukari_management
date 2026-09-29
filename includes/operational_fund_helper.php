@@ -47,6 +47,15 @@ if (!function_exists('opfund_find_open')) {
     }
 }
 
+if (!function_exists('opfund_find_open_by_party')) {
+    function opfund_find_open_by_party(PDO $pdo, int $partyId): ?array
+    {
+        $stmt = $pdo->prepare("SELECT * FROM operational_funds WHERE holder_party_id=:party_id AND status='open' ORDER BY id DESC LIMIT 1");
+        $stmt->execute([':party_id'=>$partyId]);
+        return $stmt->fetch(PDO::FETCH_ASSOC) ?: null;
+    }
+}
+
 if (!function_exists('opfund_create')) {
     function opfund_create(PDO $pdo, ?int $employeeId, string $personName, ?int $userId = null, ?string $notes = null): int
     {
@@ -74,6 +83,18 @@ if (!function_exists('opfund_create')) {
     }
 }
 
+if (!function_exists('opfund_create_for_party')) {
+    function opfund_create_for_party(PDO $pdo, int $partyId, ?int $userId=null, ?string $notes=null): int
+    {
+        $stmt=$pdo->prepare("SELECT display_name,employee_id FROM company_parties WHERE id=:id AND status='active' LIMIT 1");
+        $stmt->execute([':id'=>$partyId]);$party=$stmt->fetch(PDO::FETCH_ASSOC);
+        if(!$party) throw new Exception('Pihak/PIC tidak ditemukan atau tidak aktif.');
+        $stmt=$pdo->prepare("INSERT INTO operational_funds(fund_code,holder_party_id,employee_id,person_name,status,total_received,total_used,total_returned,total_personal_advance,current_balance,notes,created_by,created_at,updated_at) VALUES(:code,:party,:employee,:name,'open',0,0,0,0,0,:notes,:user,NOW(),NOW())");
+        $stmt->execute([':code'=>opfund_generate_code($pdo),':party'=>$partyId,':employee'=>$party['employee_id']?:null,':name'=>$party['display_name'],':notes'=>$notes,':user'=>$userId??($_SESSION['user_id']??null)]);
+        return (int)$pdo->lastInsertId();
+    }
+}
+
 if (!function_exists('opfund_recalculate')) {
     function opfund_recalculate(PDO $pdo, int $fundId): void
     {
@@ -93,13 +114,12 @@ if (!function_exists('opfund_recalculate')) {
         $returned = (float)($row['returned'] ?? 0);
         $advance = (float)($row['personal_advance'] ?? 0);
         $adjustment = (float)($row['adjustment'] ?? 0);
+        // Saldo sengaja boleh negatif. Nilai negatif berarti perusahaan
+        // berhutang kepada PIC karena pemakaian uang personal.
         $balance = $received - $used - $returned + $adjustment;
-        if ($balance < 0) {
-            $advance += abs($balance);
-            $balance = 0;
-        }
-
-        $status = ($balance <= 0.00001 && $received > 0) ? 'closed' : 'open';
+        $advance = max(0, -$balance);
+        // Satu dompet tetap digunakan untuk PIC yang sama pada pemberian berikutnya.
+        $status = 'open';
         $stmt = $pdo->prepare("UPDATE operational_funds
             SET total_received = :received,
                 total_used = :used,
@@ -107,7 +127,7 @@ if (!function_exists('opfund_recalculate')) {
                 total_personal_advance = :advance,
                 current_balance = :balance,
                 status = :status,
-                closed_at = CASE WHEN :status = 'closed' THEN COALESCE(closed_at, NOW()) ELSE NULL END,
+                closed_at = CASE WHEN :closed_status = 'closed' THEN COALESCE(closed_at, NOW()) ELSE NULL END,
                 updated_at = NOW()
             WHERE id = :id");
         $stmt->execute([
@@ -117,8 +137,34 @@ if (!function_exists('opfund_recalculate')) {
             ':advance' => $advance,
             ':balance' => $balance,
             ':status' => $status,
+            ':closed_status' => $status,
             ':id' => $fundId,
         ]);
+
+        // Cerminkan saldo minus sebagai hutang dinamis perusahaan kepada PIC.
+        if (opfund_table_exists($pdo, 'debts')) {
+            $fundStmt = $pdo->prepare("SELECT employee_id, holder_party_id, person_name, fund_code FROM operational_funds WHERE id=:id");
+            $fundStmt->execute([':id' => $fundId]);
+            $fund = $fundStmt->fetch(PDO::FETCH_ASSOC);
+            if ($fund) {
+                $debtStmt = $pdo->prepare("SELECT id, amount FROM debts WHERE source_module='operational_fund' AND source_id=:id ORDER BY id DESC LIMIT 1");
+                $debtStmt->execute([':id' => $fundId]);
+                $debt = $debtStmt->fetch(PDO::FETCH_ASSOC);
+                if ($advance > 0) {
+                    if ($debt) {
+                        $pdo->prepare("UPDATE debts SET amount=:amount, principal_amount=:principal_amount, paid_amount=0, status='unpaid', paid_date=NULL, updated_at=NOW() WHERE id=:id")
+                            ->execute([':amount' => $advance, ':principal_amount'=>$advance, ':id' => $debt['id']]);
+                    } else {
+                        $code = 'HT-' . date('Ym') . '-' . str_pad((string)$fundId, 4, '0', STR_PAD_LEFT);
+                        $pdo->prepare("INSERT INTO debts (debt_code,type,related_type,related_id,related_name,category,issue_date,amount,principal_amount,source_module,source_table,source_id,reference_code,status,description,created_at,updated_at) VALUES (:code,'debt','personal',:party_id,:name,'Dana Operasional PIC',CURDATE(),:amount,:principal_amount,'operational_fund','operational_funds',:source_id,:reference,'unpaid','Saldo dana operasional minus; perusahaan berhutang kepada PIC.',NOW(),NOW())")
+                            ->execute([':code'=>$code, ':party_id'=>$fund['holder_party_id'], ':name'=>$fund['person_name'], ':amount'=>$advance, ':principal_amount'=>$advance, ':source_id'=>$fundId, ':reference'=>$fund['fund_code']]);
+                    }
+                } elseif ($debt && (float)$debt['amount'] > 0) {
+                    $pdo->prepare("UPDATE debts SET paid_amount=amount, status='paid', paid_date=CURDATE(), updated_at=NOW() WHERE id=:id")
+                        ->execute([':id' => $debt['id']]);
+                }
+            }
+        }
     }
 }
 
@@ -227,9 +273,7 @@ if (!function_exists('opfund_movement_label')) {
         return $map[$type] ?? ucfirst($type);
     }
 }
-?>
 
-<?php
 if (!function_exists('opfund_delete_movements_by_source')) {
     function opfund_delete_movements_by_source(PDO $pdo, string $sourceModule, string $sourceTable, int $sourceId): void
     {
@@ -271,4 +315,3 @@ if (!function_exists('opfund_get')) {
         return $row ?: null;
     }
 }
-?>

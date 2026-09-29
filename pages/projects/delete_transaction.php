@@ -24,7 +24,7 @@ if (!$transaction) {
 $project_id = $transaction['project_id'];
 
 if (in_array($transaction['category'], ['Modal Project', 'Termin Pembayaran'])) {
-    redirect('pages/projects/detail.php?id=' . $project_id . '&tab=transactions#tab-transactions');
+    redirect('pages/projects/detail.php?id=' . $project_id . '&tab=transactions');
 }
 
 $stmt = $pdo->prepare("
@@ -67,7 +67,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
         $pdo->commit();
 
-        redirect('pages/projects/detail.php?id=' . $project_id . '&tab=transactions#tab-transactions');
+        redirect('pages/projects/detail.php?id=' . $project_id . '&tab=transactions');
     } catch (Exception $e) {
         $pdo->rollBack();
         $error = 'Gagal menghapus transaksi project.';
@@ -86,7 +86,7 @@ require_once __DIR__ . '/../../includes/sidebar.php';
             <p class="text-muted mb-0"><?= htmlspecialchars($transaction['project_name']); ?></p>
         </div>
 
-        <a href="<?= base_url('pages/projects/detail.php?id=' . $project_id . '&tab=transactions#tab-transactions'); ?>" class="btn btn-outline-success">
+        <a href="<?= base_url('pages/projects/detail.php?id=' . $project_id . '&tab=transactions'); ?>" class="btn btn-outline-success">
             <i class="bi bi-arrow-left me-1"></i> Kembali
         </a>
     </div>
@@ -195,7 +195,7 @@ require_once __DIR__ . '/../../includes/sidebar.php';
                         <i class="bi bi-trash me-1"></i> Hapus Permanen
                     </button>
 
-                    <a href="<?= base_url('pages/projects/detail.php?id=' . $project_id . '&tab=transactions#tab-transactions'); ?>" class="btn btn-light">
+                    <a href="<?= base_url('pages/projects/detail.php?id=' . $project_id . '&tab=transactions'); ?>" class="btn btn-light">
                         Batal
                     </a>
                 </form>

@@ -1,5 +1,7 @@
 <?php
 require_once __DIR__ . '/../../includes/auth.php';
+header('Location: simple.php?info=' . urlencode('Kalkulator HPP sudah digantikan oleh Harga Dasar pada Produk Sederhana.'));
+exit;
 require_once __DIR__ . '/product_helpers.php';
 
 $pageTitle = 'Kalkulator HPP - Nukari';
@@ -301,6 +303,7 @@ try {
 $typeOptions = [
     'recycle' => 'Recycle',
     'eco_enzyme' => 'Eco Enzyme',
+    'fertilizer' => 'Pupuk',
     'custom' => 'Custom',
     'service' => 'Jasa',
     'other' => 'Lainnya',

@@ -1,5 +1,6 @@
 <?php
 require_once __DIR__ . '/../../includes/auth.php';
+require_post();
 
 if (!has_role('super_admin', 'admin')) {
     redirect('pages/dashboard.php');
