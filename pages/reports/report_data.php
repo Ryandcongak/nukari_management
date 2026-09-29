@@ -35,9 +35,9 @@ function nr_report(PDO $pdo, string $type, string $from, string $to): array {
         ],
         'payroll' => [
             'title'=>'Laporan Payroll', 'description'=>'Gaji bersih dan status payroll karyawan.',
-            'headers'=>['Periode','Kode','Karyawan','Departemen','Gaji Pokok','Tunjangan','Bonus','Lembur','Potongan','Gaji Bersih','Status'],
-            'sql'=>"SELECT p.payroll_month,e.employee_code,e.full_name,e.department,p.base_salary,p.total_allowance,p.total_bonus,p.overtime_amount,(COALESCE(p.total_deduction,0)+COALESCE(p.loan_deduction,0)+COALESCE(p.cash_advance_deduction,0)) deductions,p.net_salary,p.status FROM payrolls p JOIN employees e ON e.id=p.employee_id WHERE CONCAT(p.payroll_month,'-01') BETWEEN DATE_FORMAT(:from,'%Y-%m-01') AND DATE_FORMAT(:to,'%Y-%m-01') ORDER BY p.payroll_month DESC,e.full_name",
-            'row'=>fn($r)=>[$r['payroll_month'],$r['employee_code'],$r['full_name'],$r['department'],nr_money($r['base_salary']),nr_money($r['total_allowance']),nr_money($r['total_bonus']),nr_money($r['overtime_amount']),nr_money($r['deductions']),nr_money($r['net_salary']),ucfirst($r['status'])],
+            'headers'=>['Periode','Kode','Karyawan','Departemen','Gaji Pokok','Tunjangan','Bonus','Lembur','Tambahan','Total Potongan','Gaji Bersih','Status'],
+            'sql'=>"SELECT p.payroll_month,e.employee_code,e.full_name,e.department,p.base_salary,p.total_allowance,p.total_bonus,p.overtime_amount,COALESCE(p.additional_amount,0) additional_amount,(COALESCE(p.total_deduction,0)+COALESCE(p.total_tax,0)+COALESCE(p.bpjs_health,0)+COALESCE(p.bpjs_employment,0)) deductions,p.net_salary,p.status FROM payrolls p JOIN employees e ON e.id=p.employee_id WHERE CONCAT(p.payroll_month,'-01') BETWEEN DATE_FORMAT(:from,'%Y-%m-01') AND DATE_FORMAT(:to,'%Y-%m-01') ORDER BY p.payroll_month DESC,e.full_name",
+            'row'=>fn($r)=>[$r['payroll_month'],$r['employee_code'],$r['full_name'],$r['department'],nr_money($r['base_salary']),nr_money($r['total_allowance']),nr_money($r['total_bonus']),nr_money($r['overtime_amount']),nr_money($r['additional_amount']),nr_money($r['deductions']),nr_money($r['net_salary']),ucfirst($r['status'])],
             'summary'=>fn($rows)=>[
                 ['label'=>'Data Payroll','value'=>nr_number(count($rows)),'tone'=>'primary'],
                 ['label'=>'Gaji Pokok','value'=>nr_money(array_sum(array_column($rows,'base_salary'))),'tone'=>'info'],

@@ -60,6 +60,14 @@ Backup dikompresi ke `backups/database` dan backup lebih dari 30 hari dibersihka
 
 Restore meminta konfirmasi eksplisit. Selalu buat backup baru sebelum restore.
 
+Setiap backup baru memiliki file checksum `.sha256`. Uji restore tanpa menyentuh database aktif dengan:
+
+```sh
+./scripts/verify_database_backup.sh backups/database/nukari_management_YYYYMMDD_HHMMSS.sql.gz
+```
+
+Perintah tersebut membuat database sementara, memulihkan backup, menjalankan audit attendance dan operasional, lalu menghapus database sementara. Backup harian macOS dijadwalkan pukul 18.00 melalui LaunchAgent `com.nukari.management.backup`. Pasang ulang atau nonaktifkan jadwal dengan `./scripts/install_backup_schedule.sh` dan `./scripts/uninstall_backup_schedule.sh`. Log tersimpan di `backups/logs`.
+
 ## Keamanan lokal
 
 - Semua POST diverifikasi dengan CSRF token.
@@ -95,7 +103,17 @@ Absensi hasil impor dapat ditambah, dikoreksi, atau dihapus per karyawan dari ha
 ```sh
 find . -path './vendor' -prune -o -name '*.php' -type f -print0 | xargs -0 -n1 php -l
 php scripts/check_code_regressions.php
+php scripts/test_authorization_rules.php
 php scripts/test_attendance_rules.php
 /Applications/MAMP/bin/php/php8.2.0/bin/php scripts/test_attendance_review_tracking.php
+/Applications/MAMP/bin/php/php8.2.0/bin/php scripts/test_write_transactions.php
+/Applications/MAMP/bin/php/php8.2.0/bin/php scripts/audit_operational_integrity.php
+/Applications/MAMP/bin/php/php8.2.0/bin/php scripts/audit_report_reconciliation.php
 /Applications/MAMP/bin/php/php8.2.0/bin/php scripts/smoke_read_pages.php
+```
+
+Untuk menjalankan seluruh pemeriksaan di atas sekaligus:
+
+```sh
+./scripts/run_health_checks.sh
 ```

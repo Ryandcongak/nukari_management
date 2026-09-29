@@ -25,6 +25,7 @@ $pages = [
     'pages/payroll/components.php' => ['keyword' => '__nukari_smoke__', 'month' => date('Y-m')],
     'pages/payroll/loans.php' => ['keyword' => '__nukari_smoke__'],
     'pages/finance/transactions.php' => ['q' => '__nukari_smoke__'],
+    'pages/reports/index.php' => ['type' => 'payroll', 'from' => '2000-01-01', 'to' => date('Y-m-d')],
     'pages/projects/index.php' => ['q' => '__nukari_smoke__'],
 ];
 
