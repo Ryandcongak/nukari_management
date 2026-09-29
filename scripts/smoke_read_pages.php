@@ -19,6 +19,7 @@ $pages = [
     'pages/suppliers/index.php' => ['q' => '__nukari_smoke__'],
     'pages/products/simple.php' => ['q' => '__nukari_smoke__'],
     'pages/employees/index.php' => ['search' => '__nukari_smoke__'],
+    'pages/attendances/index.php' => ['from' => '2000-01-01', 'to' => date('Y-m-d'), 'review' => 'pending'],
     'pages/hr/leaves.php' => ['keyword' => '__nukari_smoke__', 'month' => date('Y-m')],
     'pages/payroll/cash_advance.php' => ['keyword' => '__nukari_smoke__', 'month' => date('Y-m')],
     'pages/payroll/components.php' => ['keyword' => '__nukari_smoke__', 'month' => date('Y-m')],

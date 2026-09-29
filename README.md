@@ -88,7 +88,7 @@ Menu **Panduan Penggunaan** berbentuk buku dokumentasi dengan daftar isi, bab la
 
 POS mendukung beberapa antrean keranjang sekaligus. Antrean disimpan di browser komputer kasir sehingga pelanggan dapat ditahan sementara, antrean baru dapat dilayani, lalu keranjang sebelumnya dibuka kembali. Setelah pembayaran berhasil diproses, antrean terkait dikeluarkan dari daftar.
 
-Absensi hasil impor dapat ditambah, dikoreksi, atau dihapus per karyawan dari halaman Absensi. Perubahan manual menghitung ulang keterlambatan, pulang awal, dan total kerja serta dicatat pada activity log.
+Absensi hasil impor dapat ditambah, dikoreksi, atau dihapus per karyawan dari halaman Absensi. Perubahan manual menghitung ulang keterlambatan, pulang awal, dan total kerja serta dicatat pada activity log. Scan tidak lengkap atau durasi tidak baku di bawah enam jam masuk ke antrean review. Admin/manager dapat mengonfirmasi data tersebut dengan catatan tanpa mengubah nilai kehadiran; perubahan jam atau import ulang dengan data berbeda akan membuka review kembali.
 
 ## Pemeriksaan setelah perubahan
 
@@ -96,5 +96,6 @@ Absensi hasil impor dapat ditambah, dikoreksi, atau dihapus per karyawan dari ha
 find . -path './vendor' -prune -o -name '*.php' -type f -print0 | xargs -0 -n1 php -l
 php scripts/check_code_regressions.php
 php scripts/test_attendance_rules.php
+/Applications/MAMP/bin/php/php8.2.0/bin/php scripts/test_attendance_review_tracking.php
 /Applications/MAMP/bin/php/php8.2.0/bin/php scripts/smoke_read_pages.php
 ```

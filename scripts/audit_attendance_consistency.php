@@ -8,7 +8,8 @@ $rows = $pdo->query("
     SELECT id, attendance_date, status, check_in, check_out,
            attendance_type, attendance_day_value,
            late_minutes, early_leave_minutes, work_minutes,
-           overtime_minutes, overtime_method, overtime_rate, overtime_amount
+           overtime_minutes, overtime_method, overtime_rate, overtime_amount,
+           reviewed_at
     FROM attendances
     ORDER BY id
 ")->fetchAll(PDO::FETCH_ASSOC);
@@ -25,6 +26,8 @@ $workMismatchCount = 0;
 $overtimeMismatchCount = 0;
 $overtimeAmountMismatchCount = 0;
 $reviewRequiredCount = 0;
+$confirmedReviewCount = 0;
+$anomalyCount = 0;
 $incompleteScanCount = 0;
 $shortIrregularCount = 0;
 $distribution = [];
@@ -39,7 +42,12 @@ foreach ($rows as $row) {
     $distribution[$computedType] = ($distribution[$computedType] ?? 0) + 1;
     $classification = attendance_day_classification($row['check_in'] ?? null, $row['check_out'] ?? null, $row['status'] ?? null);
     if (!empty($classification['needs_review'])) {
-        $reviewRequiredCount++;
+        $anomalyCount++;
+        if (attendance_review_state($row) === 'confirmed') {
+            $confirmedReviewCount++;
+        } else {
+            $reviewRequiredCount++;
+        }
         if (attendance_scan_is_incomplete($row['check_in'] ?? null, $row['check_out'] ?? null)) {
             $incompleteScanCount++;
         } else {
@@ -93,7 +101,9 @@ echo json_encode([
         'saturday' => $weekdayMismatchCounts[6],
         'sunday' => $weekdayMismatchCounts[7],
     ],
+    'anomaly_count' => $anomalyCount,
     'review_required_count' => $reviewRequiredCount,
+    'confirmed_review_count' => $confirmedReviewCount,
     'incomplete_scan_count' => $incompleteScanCount,
     'short_irregular_scan_count' => $shortIrregularCount,
     'computed_type_distribution' => $distribution,

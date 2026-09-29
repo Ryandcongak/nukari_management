@@ -43,6 +43,20 @@ if (empty($shortIrregular['needs_review']) || $shortIrregular['type'] !== 'full_
     exit(1);
 }
 
+$reviewCases = [
+    ['normal attendance', ['check_in' => '08:10', 'check_out' => '17:00', 'status' => 'present'], 'not_required'],
+    ['pending incomplete scan', ['check_in' => '08:10', 'check_out' => null, 'status' => 'present'], 'pending'],
+    ['confirmed incomplete scan', ['check_in' => '08:10', 'check_out' => null, 'status' => 'present', 'reviewed_at' => '2026-09-29 10:00:00'], 'confirmed'],
+    ['pending short scan', ['check_in' => '16:41', 'check_out' => '16:42', 'status' => 'present'], 'pending'],
+];
+foreach ($reviewCases as [$label, $attendance, $expectedState]) {
+    $actualState = attendance_review_state($attendance);
+    if ($actualState !== $expectedState) {
+        fwrite(STDERR, "FAIL {$label}: expected {$expectedState}, got {$actualState}\n");
+        exit(1);
+    }
+}
+
 $weekdayDates = [
     'Monday' => '2026-09-21',
     'Tuesday' => '2026-09-22',
@@ -108,4 +122,4 @@ foreach ($roundingCases as $minutes => $expectedHours) {
     }
 }
 
-echo "Attendance rule tests passed (" . count($cases) . " classifications, {$uniformAssertions} weekday assertions, " . count($roundingCases) . " rounding assertions).\n";
+echo "Attendance rule tests passed (" . count($cases) . " classifications, " . count($reviewCases) . " review states, {$uniformAssertions} weekday assertions, " . count($roundingCases) . " rounding assertions).\n";

@@ -14,7 +14,7 @@ if ($filter_from > $filter_to) {
     [$filter_from, $filter_to] = [$filter_to, $filter_from];
 }
 $search = mb_substr(trim($_GET['q'] ?? ''), 0, 100);
-$reviewOnly = ($_GET['review'] ?? '') === 'incomplete';
+$reviewOnly = in_array(($_GET['review'] ?? ''), ['pending', 'incomplete'], true);
 $success = $_SESSION['attendance_success'] ?? ''; unset($_SESSION['attendance_success']);
 $error = '';
 
@@ -73,8 +73,46 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             }
             $_SESSION['attendance_success']='Tarif lembur '.$selectedRows[0]['full_name'].' berhasil diterapkan ke '.count($selectedRows).' tanggal. Total nilai lembur: '.rupiah($totalAmount).'.';
             $bulkReturn = ['from'=>$filter_from, 'to'=>$filter_to, 'q'=>$search];
-            if ($reviewOnly) $bulkReturn['review'] = 'incomplete';
+            if ($reviewOnly) $bulkReturn['review'] = 'pending';
             redirect('pages/attendances/index.php?'.http_build_query($bulkReturn));
+        }
+        if (in_array($action, ['confirm_review', 'reopen_review'], true)) {
+            require_role('super_admin', 'admin', 'manager');
+            $id = (int)($_POST['id'] ?? 0);
+            $reviewStmt = $pdo->prepare("SELECT a.*,e.full_name FROM attendances a JOIN employees e ON e.id=a.employee_id WHERE a.id=:id");
+            $reviewStmt->execute([':id' => $id]);
+            $reviewAttendance = $reviewStmt->fetch(PDO::FETCH_ASSOC);
+            if (!$reviewAttendance) {
+                throw new RuntimeException('Data absensi tidak ditemukan.');
+            }
+            if (attendance_review_reason($reviewAttendance) === null) {
+                throw new RuntimeException('Absensi ini tidak lagi memerlukan review.');
+            }
+
+            if ($action === 'confirm_review') {
+                $reviewNote = mb_substr(trim((string)($_POST['review_note'] ?? '')), 0, 500);
+                if (mb_strlen($reviewNote) < 5) {
+                    throw new RuntimeException('Catatan konfirmasi minimal 5 karakter.');
+                }
+                $updateReview = $pdo->prepare("UPDATE attendances SET reviewed_at=NOW(),reviewed_by=:reviewed_by,review_note=:review_note,updated_at=NOW() WHERE id=:id");
+                $updateReview->execute([
+                    ':reviewed_by' => (int)$_SESSION['user_id'],
+                    ':review_note' => $reviewNote,
+                    ':id' => $id,
+                ]);
+                log_activity($pdo, 'Absensi', 'REVIEW', 'Mengonfirmasi absensi ' . $reviewAttendance['full_name'] . ' tanggal ' . $reviewAttendance['attendance_date'] . ': ' . $reviewNote, $id, 'attendances');
+                $_SESSION['attendance_success'] = 'Review absensi berhasil dikonfirmasi tanpa mengubah nilai kehadiran.';
+            } else {
+                $pdo->prepare("UPDATE attendances SET reviewed_at=NULL,reviewed_by=NULL,review_note=NULL,updated_at=NOW() WHERE id=:id")->execute([':id' => $id]);
+                log_activity($pdo, 'Absensi', 'REOPEN_REVIEW', 'Membuka kembali review absensi ' . $reviewAttendance['full_name'] . ' tanggal ' . $reviewAttendance['attendance_date'], $id, 'attendances');
+                $_SESSION['attendance_success'] = 'Review absensi dibuka kembali.';
+            }
+
+            $returnFrom = preg_match('/^\d{4}-\d{2}-\d{2}$/', $_POST['return_from'] ?? '') ? $_POST['return_from'] : $reviewAttendance['attendance_date'];
+            $returnTo = preg_match('/^\d{4}-\d{2}-\d{2}$/', $_POST['return_to'] ?? '') ? $_POST['return_to'] : $reviewAttendance['attendance_date'];
+            $returnParams = ['from' => $returnFrom, 'to' => $returnTo, 'q' => mb_substr(trim((string)($_POST['return_q'] ?? '')), 0, 100)];
+            if (($_POST['return_review'] ?? '') === 'pending') $returnParams['review'] = 'pending';
+            redirect('pages/attendances/index.php?' . http_build_query($returnParams) . '#attendance-' . $id);
         }
         if ($action==='delete_filtered') {
             require_role('super_admin', 'admin');
@@ -140,11 +178,26 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $employee=$pdo->prepare("SELECT full_name FROM employees WHERE id=:id AND employment_status='active'");$employee->execute([':id'=>$employeeId]);$employeeName=$employee->fetchColumn();
         if(!$employeeName) throw new RuntimeException('Karyawan aktif tidak ditemukan.');
         $calculated=attendance_simple_calculate($_POST); $notes=trim($_POST['notes'] ?? '');
+        $existingAttendance = null;
+        if ($id > 0) {
+            $existingStmt = $pdo->prepare("SELECT employee_id,attendance_date,check_in,check_out,status,reviewed_at,reviewed_by,review_note FROM attendances WHERE id=:id");
+            $existingStmt->execute([':id' => $id]);
+            $existingAttendance = $existingStmt->fetch(PDO::FETCH_ASSOC);
+            if (!$existingAttendance) throw new RuntimeException('Data absensi tidak ditemukan.');
+        }
         $duplicate=$pdo->prepare("SELECT id FROM attendances WHERE employee_id=:employee AND attendance_date=:date AND id<>:id");$duplicate->execute([':employee'=>$employeeId,':date'=>$date,':id'=>$id]);
         if($duplicate->fetchColumn()) throw new RuntimeException('Karyawan sudah memiliki absensi pada tanggal tersebut. Silakan edit data yang ada.');
         $params=[':employee_id'=>$employeeId,':attendance_date'=>$date,':morning_in'=>$calculated['morning_in'],':morning_out'=>$calculated['morning_out'],':afternoon_in'=>$calculated['afternoon_in'],':afternoon_out'=>$calculated['afternoon_out'],':overtime_in'=>$calculated['overtime_in'],':overtime_out'=>$calculated['overtime_out'],':check_in'=>$calculated['check_in'],':check_out'=>$calculated['check_out'],':late_minutes'=>$calculated['late_minutes'],':early_leave_minutes'=>$calculated['early_leave_minutes'],':work_minutes'=>$calculated['work_minutes'],':overtime_minutes'=>$calculated['overtime_minutes'],':overtime_method'=>$calculated['overtime_method'],':overtime_rate'=>$calculated['overtime_rate'],':overtime_amount'=>$calculated['overtime_amount'],':status'=>$calculated['status'],':attendance_type'=>$calculated['attendance_type'],':attendance_day_value'=>$calculated['attendance_day_value'],':notes'=>$notes?:null];
         if($id>0){
-            $params[':id']=$id;$stmt=$pdo->prepare("UPDATE attendances SET employee_id=:employee_id,attendance_date=:attendance_date,morning_in=:morning_in,morning_out=:morning_out,afternoon_in=:afternoon_in,afternoon_out=:afternoon_out,overtime_in=:overtime_in,overtime_out=:overtime_out,check_in=:check_in,check_out=:check_out,late_minutes=:late_minutes,early_leave_minutes=:early_leave_minutes,work_minutes=:work_minutes,overtime_minutes=:overtime_minutes,overtime_method=:overtime_method,overtime_rate=:overtime_rate,overtime_amount=:overtime_amount,status=:status,attendance_type=:attendance_type,attendance_day_value=:attendance_day_value,notes=:notes,source='manual_edit',updated_at=NOW() WHERE id=:id");$stmt->execute($params);$verb='diperbarui';$logAction='UPDATE';
+            $sameReviewInputs = (int)$existingAttendance['employee_id'] === $employeeId
+                && $existingAttendance['attendance_date'] === $date
+                && ($existingAttendance['check_in'] ?? null) === $calculated['check_in']
+                && ($existingAttendance['check_out'] ?? null) === $calculated['check_out']
+                && ($existingAttendance['status'] ?? null) === $calculated['status'];
+            $params[':reviewed_at'] = $sameReviewInputs ? ($existingAttendance['reviewed_at'] ?? null) : null;
+            $params[':reviewed_by'] = $sameReviewInputs ? ($existingAttendance['reviewed_by'] ?? null) : null;
+            $params[':review_note'] = $sameReviewInputs ? ($existingAttendance['review_note'] ?? null) : null;
+            $params[':id']=$id;$stmt=$pdo->prepare("UPDATE attendances SET employee_id=:employee_id,attendance_date=:attendance_date,morning_in=:morning_in,morning_out=:morning_out,afternoon_in=:afternoon_in,afternoon_out=:afternoon_out,overtime_in=:overtime_in,overtime_out=:overtime_out,check_in=:check_in,check_out=:check_out,late_minutes=:late_minutes,early_leave_minutes=:early_leave_minutes,work_minutes=:work_minutes,overtime_minutes=:overtime_minutes,overtime_method=:overtime_method,overtime_rate=:overtime_rate,overtime_amount=:overtime_amount,status=:status,attendance_type=:attendance_type,attendance_day_value=:attendance_day_value,notes=:notes,source='manual_edit',reviewed_at=:reviewed_at,reviewed_by=:reviewed_by,review_note=:review_note,updated_at=NOW() WHERE id=:id");$stmt->execute($params);$verb='diperbarui';$logAction='UPDATE';
         } else {
             $stmt=$pdo->prepare("INSERT INTO attendances (employee_id,attendance_date,morning_in,morning_out,afternoon_in,afternoon_out,overtime_in,overtime_out,check_in,check_out,late_minutes,early_leave_minutes,work_minutes,overtime_minutes,overtime_method,overtime_rate,overtime_amount,status,attendance_type,attendance_day_value,notes,source) VALUES (:employee_id,:attendance_date,:morning_in,:morning_out,:afternoon_in,:afternoon_out,:overtime_in,:overtime_out,:check_in,:check_out,:late_minutes,:early_leave_minutes,:work_minutes,:overtime_minutes,:overtime_method,:overtime_rate,:overtime_amount,:status,:attendance_type,:attendance_day_value,:notes,'manual')");$stmt->execute($params);$id=(int)$pdo->lastInsertId();$verb='ditambahkan';$logAction='CREATE';
         }
@@ -158,23 +211,29 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             'to' => $returnTo,
             'q' => mb_substr(trim((string)($_POST['return_q'] ?? '')), 0, 100),
         ];
-        if (($_POST['return_review'] ?? '') === 'incomplete') $returnParams['review'] = 'incomplete';
+        if (in_array(($_POST['return_review'] ?? ''), ['pending', 'incomplete'], true)) $returnParams['review'] = 'pending';
         redirect('pages/attendances/index.php?'.http_build_query($returnParams).'#attendance-'.$id);
     } catch(Throwable $e){$error=$e->getMessage();}
 }
 
 $employees=$pdo->query("SELECT id,employee_code,full_name,department FROM employees WHERE employment_status='active' ORDER BY full_name")->fetchAll();
-$reviewSummary = $pdo->query("
-    SELECT COUNT(*) AS total, MIN(attendance_date) AS first_date, MAX(attendance_date) AS last_date
-    FROM attendances
-    WHERE ((check_in IS NULL) <> (check_out IS NULL))
+$reviewCondition = "
+    (((check_in IS NULL) <> (check_out IS NULL))
        OR (
             check_in IS NOT NULL
         AND check_out IS NOT NULL
         AND attendance_type = 'full_day_irregular'
         AND TIMESTAMPDIFF(MINUTE, TIMESTAMP(attendance_date, check_in), TIMESTAMP(attendance_date, check_out)) < 360
-       )
-")->fetch(PDO::FETCH_ASSOC) ?: ['total'=>0, 'first_date'=>null, 'last_date'=>null];
+       ))";
+$reviewSummary = $pdo->query("
+    SELECT
+        SUM(reviewed_at IS NULL) AS pending,
+        SUM(reviewed_at IS NOT NULL) AS confirmed,
+        MIN(CASE WHEN reviewed_at IS NULL THEN attendance_date END) AS first_date,
+        MAX(CASE WHEN reviewed_at IS NULL THEN attendance_date END) AS last_date
+    FROM attendances
+    WHERE {$reviewCondition}
+")->fetch(PDO::FETCH_ASSOC) ?: ['pending'=>0, 'confirmed'=>0, 'first_date'=>null, 'last_date'=>null];
 
 function format_time_attendance($time)
 {
@@ -215,7 +274,7 @@ if ($reviewOnly) {
             AND a.attendance_type = 'full_day_irregular'
             AND TIMESTAMPDIFF(MINUTE, TIMESTAMP(a.attendance_date, a.check_in), TIMESTAMP(a.attendance_date, a.check_out)) < 360
         )
-    )";
+    ) AND a.reviewed_at IS NULL";
 }
 
 $stmt = $pdo->prepare("
@@ -225,9 +284,11 @@ $stmt = $pdo->prepare("
         e.employee_code,
         e.fingerprint_id,
         e.position,
-        e.department
+        e.department,
+        reviewer.full_name AS reviewed_by_name
     FROM attendances a
     JOIN employees e ON a.employee_id = e.id
+    LEFT JOIN users reviewer ON reviewer.id = a.reviewed_by
     WHERE a.attendance_date BETWEEN :filter_from AND :filter_to
     {$attendanceSearchSql}
     ORDER BY a.attendance_date DESC, e.full_name ASC
@@ -252,7 +313,7 @@ foreach ($attendances as $att) {
     if (in_array($dayClass['type'], ['half_day_morning', 'half_day_afternoon'], true)) {
         $totalHalfDays++;
     }
-    if (!empty($dayClass['needs_review'])) {
+    if (attendance_review_state($att) === 'pending') {
         $totalIncompleteScans++;
     }
 
@@ -290,10 +351,10 @@ require_once __DIR__ . '/../../includes/sidebar.php';
 
     <?php if($success): ?><div class="alert alert-success"><?= htmlspecialchars($success); ?></div><?php endif; ?>
     <?php if($error): ?><div class="alert alert-danger"><?= htmlspecialchars($error); ?></div><?php endif; ?>
-    <?php if ((int)$reviewSummary['total'] > 0): ?>
+    <?php if ((int)$reviewSummary['pending'] > 0): ?>
         <div class="alert alert-danger d-flex justify-content-between align-items-center flex-wrap gap-2">
-            <div><i class="bi bi-exclamation-octagon me-1"></i><strong><?= (int)$reviewSummary['total']; ?> absensi perlu diperiksa</strong> karena scan tidak lengkap atau durasi jam tidak baku terlalu pendek.</div>
-            <a class="btn btn-sm btn-outline-danger" href="<?= base_url('pages/attendances/index.php?from='.urlencode((string)$reviewSummary['first_date']).'&to='.urlencode((string)$reviewSummary['last_date']).'&review=incomplete'); ?>">Periksa sekarang</a>
+            <div><i class="bi bi-exclamation-octagon me-1"></i><strong><?= (int)$reviewSummary['pending']; ?> absensi belum direview</strong> karena scan tidak lengkap atau durasi jam tidak baku terlalu pendek.<?php if ((int)$reviewSummary['confirmed'] > 0): ?> <span class="text-muted"><?= (int)$reviewSummary['confirmed']; ?> data lain sudah dikonfirmasi.</span><?php endif; ?></div>
+            <a class="btn btn-sm btn-outline-danger" href="<?= base_url('pages/attendances/index.php?from='.urlencode((string)$reviewSummary['first_date']).'&to='.urlencode((string)$reviewSummary['last_date']).'&review=pending'); ?>">Periksa sekarang</a>
         </div>
     <?php endif; ?>
 
@@ -356,7 +417,7 @@ require_once __DIR__ . '/../../includes/sidebar.php';
             <div class="col-lg-4 col-md-8">
                 <label class="form-label fw-semibold">Cari Karyawan</label>
                 <input type="search" name="q" class="form-control" value="<?= htmlspecialchars($search); ?>" placeholder="Nama, kode, fingerprint, departemen">
-                <div class="form-check mt-2"><input class="form-check-input" type="checkbox" name="review" value="incomplete" id="reviewIncomplete" <?= $reviewOnly ? 'checked' : ''; ?>><label class="form-check-label small" for="reviewIncomplete">Hanya scan yang perlu diperiksa</label></div>
+                <div class="form-check mt-2"><input class="form-check-input" type="checkbox" name="review" value="pending" id="reviewIncomplete" <?= $reviewOnly ? 'checked' : ''; ?>><label class="form-check-label small" for="reviewIncomplete">Hanya absensi yang belum direview</label></div>
             </div>
 
             <div class="col-lg-2 col-md-4 d-grid">
@@ -407,7 +468,11 @@ require_once __DIR__ . '/../../includes/sidebar.php';
                     <?php if ($attendances): ?>
                         <?php $no = 1; ?>
                         <?php foreach ($attendances as $att): ?>
-                            <?php $dayClass = attendance_day_classification($att['check_in'] ?? null, $att['check_out'] ?? null, $att['status'] ?? null); ?>
+                            <?php
+                                $dayClass = attendance_day_classification($att['check_in'] ?? null, $att['check_out'] ?? null, $att['status'] ?? null);
+                                $reviewState = attendance_review_state($att);
+                                $reviewReason = attendance_review_reason($att);
+                            ?>
                             <tr id="attendance-<?= (int)$att['id']; ?>">
                                 <?php if (has_role('super_admin', 'admin')): ?>
                                     <td class="text-center">
@@ -462,8 +527,10 @@ require_once __DIR__ . '/../../includes/sidebar.php';
                                 <td><div class="fw-semibold"><?= rupiah($att['overtime_amount'] ?? 0); ?></div><small class="text-muted"><?= ($att['overtime_method'] ?? 'hourly') === 'fixed' ? 'Borongan' : 'Per jam · '.rupiah($att['overtime_rate'] ?? 0); ?></small></td>
 
                                 <td>
-                                    <?php if (!empty($dayClass['needs_review'])): ?>
+                                    <?php if ($reviewState === 'pending'): ?>
                                         <span class="badge rounded-pill badge-soft-red">Perlu Diperiksa</span>
+                                    <?php elseif ($reviewState === 'confirmed'): ?>
+                                        <span class="badge rounded-pill badge-soft-green">Sudah Dikonfirmasi</span>
                                     <?php elseif ($att['status'] === 'late'): ?>
                                         <span class="badge rounded-pill badge-soft-orange">Terlambat</span>
                                     <?php elseif ($att['status'] === 'absent'): ?>
@@ -475,10 +542,15 @@ require_once __DIR__ . '/../../includes/sidebar.php';
                                     <?php else: ?>
                                         <span class="badge rounded-pill badge-soft-green">Hadir</span>
                                     <?php endif; ?>
-                                    <div><small class="<?= !empty($dayClass['needs_review']) ? 'text-danger fw-semibold' : 'text-muted'; ?>"><?= htmlspecialchars($dayClass['label']); ?> · <?= attendance_day_number($dayClass['value']); ?> hari</small></div>
+                                    <div><small class="<?= $reviewState === 'pending' ? 'text-danger fw-semibold' : 'text-muted'; ?>"><?= htmlspecialchars($dayClass['label']); ?> · <?= attendance_day_number($dayClass['value']); ?> hari</small></div>
+                                    <?php if ($reviewState === 'confirmed'): ?><div><small class="text-success"><?= htmlspecialchars($att['reviewed_by_name'] ?: 'Pengguna'); ?> · <?= date('d M Y H:i', strtotime($att['reviewed_at'])); ?> · <?= htmlspecialchars($att['review_note'] ?? ''); ?></small></div><?php endif; ?>
                                 </td>
                                 <td><span class="badge bg-light text-dark"><?= htmlspecialchars($att['source'] ?: 'manual'); ?></span></td>
-                                <td><div class="d-flex gap-1"><button type="button" class="btn btn-sm btn-outline-primary" data-record="<?= htmlspecialchars(json_encode($att),ENT_QUOTES,'UTF-8'); ?>" onclick="editAttendance(this)" data-bs-toggle="modal" data-bs-target="#attendanceModal"><i class="bi bi-pencil"></i></button><form method="post" onsubmit="return confirm('Hapus absensi <?= htmlspecialchars($att['full_name'],ENT_QUOTES,'UTF-8'); ?>?')"><?= csrf_field(); ?><input type="hidden" name="action" value="delete"><input type="hidden" name="id" value="<?= (int)$att['id']; ?>"><button class="btn btn-sm btn-outline-danger"><i class="bi bi-trash"></i></button></form></div></td>
+                                <td><div class="d-flex gap-1 flex-wrap">
+                                    <?php if ($reviewState === 'pending' && has_role('super_admin', 'admin', 'manager')): ?><button type="button" class="btn btn-sm btn-outline-success" title="Konfirmasi hasil review" data-id="<?= (int)$att['id']; ?>" data-name="<?= htmlspecialchars($att['full_name'], ENT_QUOTES, 'UTF-8'); ?>" data-date="<?= htmlspecialchars($att['attendance_date'], ENT_QUOTES, 'UTF-8'); ?>" data-reason="<?= htmlspecialchars((string)$reviewReason, ENT_QUOTES, 'UTF-8'); ?>" onclick="confirmAttendanceReview(this)" data-bs-toggle="modal" data-bs-target="#attendanceReviewModal"><i class="bi bi-check2-circle"></i></button><?php endif; ?>
+                                    <?php if ($reviewState === 'confirmed' && has_role('super_admin', 'admin', 'manager')): ?><form method="post" onsubmit="return confirm('Buka kembali review absensi ini?')"><?= csrf_field(); ?><input type="hidden" name="action" value="reopen_review"><input type="hidden" name="id" value="<?= (int)$att['id']; ?>"><input type="hidden" name="return_from" value="<?= htmlspecialchars($filter_from); ?>"><input type="hidden" name="return_to" value="<?= htmlspecialchars($filter_to); ?>"><input type="hidden" name="return_q" value="<?= htmlspecialchars($search); ?>"><input type="hidden" name="return_review" value="<?= $reviewOnly ? 'pending' : ''; ?>"><button class="btn btn-sm btn-outline-warning" title="Buka kembali review"><i class="bi bi-arrow-counterclockwise"></i></button></form><?php endif; ?>
+                                    <button type="button" class="btn btn-sm btn-outline-primary" data-record="<?= htmlspecialchars(json_encode($att),ENT_QUOTES,'UTF-8'); ?>" onclick="editAttendance(this)" data-bs-toggle="modal" data-bs-target="#attendanceModal"><i class="bi bi-pencil"></i></button><form method="post" onsubmit="return confirm('Hapus absensi <?= htmlspecialchars($att['full_name'],ENT_QUOTES,'UTF-8'); ?>?')"><?= csrf_field(); ?><input type="hidden" name="action" value="delete"><input type="hidden" name="id" value="<?= (int)$att['id']; ?>"><button class="btn btn-sm btn-outline-danger"><i class="bi bi-trash"></i></button></form>
+                                </div></td>
                             </tr>
                         <?php endforeach; ?>
                     <?php else: ?>
@@ -501,16 +573,19 @@ require_once __DIR__ . '/../../includes/sidebar.php';
 <div class="modal fade" id="bulkOvertimeModal" tabindex="-1"><div class="modal-dialog modal-lg"><div class="modal-content"><form method="post" id="bulkOvertimeForm"><div class="modal-header"><div><h5 class="modal-title fw-bold">Atur Tarif Lembur Per Jam</h5><small class="text-muted">Tarif diterapkan pada beberapa tanggal lembur milik satu karyawan.</small></div><button type="button" class="btn-close" data-bs-dismiss="modal"></button></div><div class="modal-body"><?= csrf_field(); ?><input type="hidden" name="action" value="bulk_overtime_hourly"><div id="bulkOvertimeIds"></div><div class="row g-3"><div class="col-md-7"><label class="form-label fw-semibold">Karyawan dan Tanggal</label><div class="border rounded p-3 bg-light"><div class="fw-semibold" id="bulkOvertimeEmployee">-</div><div class="small text-muted mt-1" id="bulkOvertimeDates">-</div></div></div><div class="col-md-5"><label class="form-label fw-semibold">Tarif Lembur per Jam</label><input class="form-control currency-input" name="bulk_overtime_rate" id="bulkOvertimeRate" value="0" required inputmode="numeric"><small class="text-muted">Pembulatan dilakukan pada setiap tanggal: 40 menit ke atas naik satu jam.</small></div></div><div class="row g-3 mt-1"><div class="col-md-4"><div class="stat-card border-blue h-100"><div class="stat-title">Tanggal Dipilih</div><div class="stat-number" id="bulkSummaryDays">0</div></div></div><div class="col-md-4"><div class="stat-card border-orange h-100"><div class="stat-title">Jam Dibayar</div><div class="stat-number" id="bulkSummaryHours">0</div></div></div><div class="col-md-4"><div class="stat-card border-green h-100"><div class="stat-title">Estimasi Upah</div><div class="stat-number" style="font-size:22px" id="bulkSummaryAmount">Rp 0</div></div></div></div><div class="alert alert-warning mt-3 mb-0"><small>Tanggal yang sudah masuk payroll berstatus dibayar atau dikunci akan ditolak. Payroll draft harus di-generate ulang setelah tarif berubah. Untuk lembur borongan, gunakan tombol edit pada satu tanggal.</small></div></div><div class="modal-footer"><button type="button" class="btn btn-light" data-bs-dismiss="modal">Batal</button><button class="btn btn-nukari"><i class="bi bi-check-lg me-1"></i>Terapkan Tarif</button></div></form></div></div></div>
 <?php endif; ?>
 
-<div class="modal fade" id="attendanceModal" tabindex="-1"><div class="modal-dialog modal-lg modal-dialog-scrollable"><div class="modal-content"><form method="post" id="attendanceForm"><?= csrf_field(); ?><div class="modal-header"><div><h5 class="modal-title fw-bold" id="attendanceTitle">Tambah Absensi</h5><small class="text-muted">Hari penuh bernilai 1; setengah hari pagi/siang bernilai 0,5. Lembur tidak mengubah nilai hari.</small></div><button type="button" class="btn-close" data-bs-dismiss="modal"></button></div><div class="modal-body"><input type="hidden" name="action" value="save"><input type="hidden" name="id" id="attendanceId"><input type="hidden" name="return_from" value="<?= htmlspecialchars($filter_from); ?>"><input type="hidden" name="return_to" value="<?= htmlspecialchars($filter_to); ?>"><input type="hidden" name="return_q" value="<?= htmlspecialchars($search); ?>"><input type="hidden" name="return_review" value="<?= $reviewOnly ? 'incomplete' : ''; ?>"><div class="row g-3">
+<div class="modal fade" id="attendanceModal" tabindex="-1"><div class="modal-dialog modal-lg modal-dialog-scrollable"><div class="modal-content"><form method="post" id="attendanceForm"><?= csrf_field(); ?><div class="modal-header"><div><h5 class="modal-title fw-bold" id="attendanceTitle">Tambah Absensi</h5><small class="text-muted">Hari penuh bernilai 1; setengah hari pagi/siang bernilai 0,5. Lembur tidak mengubah nilai hari.</small></div><button type="button" class="btn-close" data-bs-dismiss="modal"></button></div><div class="modal-body"><input type="hidden" name="action" value="save"><input type="hidden" name="id" id="attendanceId"><input type="hidden" name="return_from" value="<?= htmlspecialchars($filter_from); ?>"><input type="hidden" name="return_to" value="<?= htmlspecialchars($filter_to); ?>"><input type="hidden" name="return_q" value="<?= htmlspecialchars($search); ?>"><input type="hidden" name="return_review" value="<?= $reviewOnly ? 'pending' : ''; ?>"><div class="row g-3">
 <div class="col-md-7"><label class="form-label fw-semibold">Karyawan</label><select class="form-select" name="employee_id" id="attendanceEmployee" required><option value="">Pilih karyawan</option><?php foreach($employees as $employee): ?><option value="<?= (int)$employee['id']; ?>"><?= htmlspecialchars($employee['full_name'].' · '.($employee['employee_code']?:'-').' · '.($employee['department']?:'-')); ?></option><?php endforeach; ?></select></div><div class="col-md-5"><label class="form-label fw-semibold">Tanggal</label><input class="form-control" type="date" name="attendance_date" id="attendanceDate" required></div>
 <div class="col-6"><label class="form-label fw-semibold">Jam Datang</label><input class="form-control" type="time" name="check_in" id="check_in"></div><div class="col-6"><label class="form-label fw-semibold">Jam Pulang</label><input class="form-control" type="time" name="check_out" id="check_out"></div>
 <div class="col-md-4"><label class="form-label fw-semibold">Metode Lembur</label><select class="form-select" name="overtime_method" id="overtime_method"><option value="hourly">Tarif per jam</option><option value="fixed">Borongan</option></select></div><div class="col-md-4"><label class="form-label fw-semibold">Tarif per Jam</label><input class="form-control currency-input" name="overtime_rate" id="overtime_rate" value="0"></div><div class="col-md-4"><label class="form-label fw-semibold">Nominal Borongan</label><input class="form-control currency-input" name="overtime_amount" id="overtime_amount" value="0"></div>
 <div class="col-md-5"><label class="form-label fw-semibold">Status</label><select class="form-select" name="status" id="attendanceStatus"><option value="present">Hadir (keterlambatan dihitung otomatis)</option><option value="permission">Izin</option><option value="sick">Sakit</option><option value="absent">Alpha</option></select></div><div class="col-md-7"><label class="form-label fw-semibold">Catatan</label><input class="form-control" name="notes" id="attendanceNotes" maxlength="500"></div></div><div class="alert alert-info mt-3 mb-0"><small>Tarif/metode tersimpan pada absensi ini sehingga perubahan tarif berikutnya tidak mengubah histori. Mengedit hasil fingerprint akan mengubah sumber menjadi <strong>manual_edit</strong>.</small></div></div><div class="modal-footer"><button type="button" class="btn btn-light" data-bs-dismiss="modal">Batal</button><button class="btn btn-nukari"><i class="bi bi-save me-1"></i>Simpan Absensi</button></div></form></div></div></div>
+
+<div class="modal fade" id="attendanceReviewModal" tabindex="-1"><div class="modal-dialog"><div class="modal-content"><form method="post"><div class="modal-header"><div><h5 class="modal-title fw-bold">Konfirmasi Review Absensi</h5><small class="text-muted" id="attendanceReviewIdentity">-</small></div><button type="button" class="btn-close" data-bs-dismiss="modal"></button></div><div class="modal-body"><?= csrf_field(); ?><input type="hidden" name="action" value="confirm_review"><input type="hidden" name="id" id="attendanceReviewId"><input type="hidden" name="return_from" value="<?= htmlspecialchars($filter_from); ?>"><input type="hidden" name="return_to" value="<?= htmlspecialchars($filter_to); ?>"><input type="hidden" name="return_q" value="<?= htmlspecialchars($search); ?>"><input type="hidden" name="return_review" value="<?= $reviewOnly ? 'pending' : ''; ?>"><div class="alert alert-warning"><strong>Alasan ditandai:</strong> <span id="attendanceReviewReason">-</span><br><small>Konfirmasi hanya menandai bahwa data sudah diperiksa; jam dan nilai kehadiran tidak diubah.</small></div><label class="form-label fw-semibold">Hasil pemeriksaan</label><textarea class="form-control" name="review_note" id="attendanceReviewNote" rows="3" minlength="5" maxlength="500" required placeholder="Contoh: Jam dikonfirmasi dari catatan supervisor; tetap dihitung sesuai data."></textarea></div><div class="modal-footer"><button type="button" class="btn btn-light" data-bs-dismiss="modal">Batal</button><button class="btn btn-success"><i class="bi bi-check2-circle me-1"></i>Konfirmasi Sudah Direview</button></div></form></div></div></div>
 <script>
 const attendanceFields=['check_in','check_out'];
 function timeShort(v){return v&&v!=='00:00:00'?String(v).slice(0,5):''}
 function newAttendance(){document.getElementById('attendanceForm').reset();document.getElementById('attendanceId').value='';document.getElementById('attendanceDate').value=<?= json_encode($filter_to); ?>;document.getElementById('attendanceTitle').textContent='Tambah Absensi';document.getElementById('attendanceEmployee').disabled=false}
 function editAttendance(button){const r=JSON.parse(button.dataset.record);document.getElementById('attendanceForm').reset();document.getElementById('attendanceTitle').textContent='Edit Absensi · '+r.full_name;document.getElementById('attendanceId').value=r.id;document.getElementById('attendanceEmployee').value=r.employee_id;document.getElementById('attendanceEmployee').disabled=false;document.getElementById('attendanceDate').value=r.attendance_date;attendanceFields.forEach(f=>document.getElementById(f).value=timeShort(r[f]));document.getElementById('overtime_method').value=r.overtime_method||'hourly';document.getElementById('overtime_rate').value=Math.round(Number(r.overtime_rate||0));document.getElementById('overtime_amount').value=Math.round(Number(r.overtime_amount||0));document.getElementById('attendanceStatus').value=['permission','sick','absent'].includes(r.status)?r.status:'present';document.getElementById('attendanceNotes').value=r.notes||''}
+function confirmAttendanceReview(button){document.getElementById('attendanceReviewId').value=button.dataset.id;document.getElementById('attendanceReviewIdentity').textContent=button.dataset.name+' · '+button.dataset.date;document.getElementById('attendanceReviewReason').textContent=button.dataset.reason;document.getElementById('attendanceReviewNote').value=''}
 const overtimeCheckboxes=Array.from(document.querySelectorAll('.overtime-checkbox'));
 const bulkOvertimeButton=document.getElementById('bulkOvertimeButton');
 function selectedOvertimeRows(){return overtimeCheckboxes.filter(checkbox=>checkbox.checked)}

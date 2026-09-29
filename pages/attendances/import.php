@@ -243,7 +243,7 @@ function save_simple_import(PDO $pdo, int $employeeId, string $date, array $scan
         ':attendance_type' => $calculated['attendance_type'], ':attendance_day_value' => $calculated['attendance_day_value'],
         ':raw_scan_times' => json_encode($scanTimes),
     ];
-    $check = $pdo->prepare("SELECT id,overtime_method,overtime_rate,overtime_amount FROM attendances WHERE employee_id=:employee_id AND attendance_date=:attendance_date LIMIT 1");
+    $check = $pdo->prepare("SELECT id,check_in,check_out,status,overtime_method,overtime_rate,overtime_amount,reviewed_at,reviewed_by,review_note FROM attendances WHERE employee_id=:employee_id AND attendance_date=:attendance_date LIMIT 1");
     $check->execute([':employee_id' => $employeeId, ':attendance_date' => $date]);
     $existing = $check->fetch(PDO::FETCH_ASSOC);
     if ($existing) {
@@ -259,11 +259,17 @@ function save_simple_import(PDO $pdo, int $employeeId, string $date, array $scan
         $params[':overtime_method'] = $historical['overtime_method'];
         $params[':overtime_rate'] = $historical['overtime_rate'];
         $params[':overtime_amount'] = $historical['overtime_amount'];
+        $sameReviewInputs = ($existing['check_in'] ?? null) === $calculated['check_in']
+            && ($existing['check_out'] ?? null) === $calculated['check_out']
+            && ($existing['status'] ?? null) === $calculated['status'];
+        $params[':reviewed_at'] = $sameReviewInputs ? ($existing['reviewed_at'] ?? null) : null;
+        $params[':reviewed_by'] = $sameReviewInputs ? ($existing['reviewed_by'] ?? null) : null;
+        $params[':review_note'] = $sameReviewInputs ? ($existing['review_note'] ?? null) : null;
         $params[':id'] = $existing['id'];
         // employee_id dan attendance_date hanya dipakai untuk pencarian/INSERT.
         // PDO native prepare menolak parameter tambahan pada query UPDATE.
         unset($params[':employee_id'], $params[':attendance_date']);
-        $stmt = $pdo->prepare("UPDATE attendances SET morning_in=:morning_in,morning_out=NULL,afternoon_in=NULL,afternoon_out=:afternoon_out,overtime_in=NULL,overtime_out=NULL,check_in=:check_in,check_out=:check_out,late_minutes=:late_minutes,early_leave_minutes=:early_leave_minutes,work_minutes=:work_minutes,overtime_minutes=:overtime_minutes,overtime_method=:overtime_method,overtime_rate=:overtime_rate,overtime_amount=:overtime_amount,raw_scan_times=:raw_scan_times,status=:status,attendance_type=:attendance_type,attendance_day_value=:attendance_day_value,notes='Imported from horizontal fingerprint report',source='fingerprint',updated_at=NOW() WHERE id=:id");
+        $stmt = $pdo->prepare("UPDATE attendances SET morning_in=:morning_in,morning_out=NULL,afternoon_in=NULL,afternoon_out=:afternoon_out,overtime_in=NULL,overtime_out=NULL,check_in=:check_in,check_out=:check_out,late_minutes=:late_minutes,early_leave_minutes=:early_leave_minutes,work_minutes=:work_minutes,overtime_minutes=:overtime_minutes,overtime_method=:overtime_method,overtime_rate=:overtime_rate,overtime_amount=:overtime_amount,raw_scan_times=:raw_scan_times,status=:status,attendance_type=:attendance_type,attendance_day_value=:attendance_day_value,notes='Imported from horizontal fingerprint report',source='fingerprint',reviewed_at=:reviewed_at,reviewed_by=:reviewed_by,review_note=:review_note,updated_at=NOW() WHERE id=:id");
         $stmt->execute($params); $updated++;
     } else {
         $stmt = $pdo->prepare("INSERT INTO attendances (employee_id,attendance_date,morning_in,afternoon_out,check_in,check_out,late_minutes,early_leave_minutes,work_minutes,overtime_minutes,overtime_method,overtime_rate,overtime_amount,raw_scan_times,status,attendance_type,attendance_day_value,notes,source) VALUES (:employee_id,:attendance_date,:morning_in,:afternoon_out,:check_in,:check_out,:late_minutes,:early_leave_minutes,:work_minutes,:overtime_minutes,:overtime_method,:overtime_rate,:overtime_amount,:raw_scan_times,:status,:attendance_type,:attendance_day_value,'Imported from horizontal fingerprint report','fingerprint')");

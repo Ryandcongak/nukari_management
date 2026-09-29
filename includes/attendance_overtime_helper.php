@@ -133,6 +133,32 @@ function attendance_scan_is_incomplete(?string $checkIn, ?string $checkOut): boo
     return (bool)($checkIn || $checkOut) && !($checkIn && $checkOut);
 }
 
+function attendance_review_reason(array $attendance): ?string
+{
+    $checkIn = $attendance['check_in'] ?? null;
+    $checkOut = $attendance['check_out'] ?? null;
+    $classification = attendance_day_classification($checkIn, $checkOut, $attendance['status'] ?? null);
+
+    if (empty($classification['needs_review'])) {
+        return null;
+    }
+
+    if (attendance_scan_is_incomplete($checkIn, $checkOut)) {
+        return 'Scan masuk atau pulang tidak lengkap';
+    }
+
+    return 'Durasi scan kurang dari 6 jam (' . attendance_minutes($checkIn, $checkOut) . ' menit)';
+}
+
+function attendance_review_state(array $attendance): string
+{
+    if (attendance_review_reason($attendance) === null) {
+        return 'not_required';
+    }
+
+    return empty($attendance['reviewed_at']) ? 'pending' : 'confirmed';
+}
+
 function attendance_day_number($value): string
 {
     $formatted = number_format((float)$value, 2, ',', '.');
