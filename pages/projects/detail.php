@@ -280,63 +280,57 @@ function delete_project_transaction_asset(PDO $pdo, $transactionId)
         return;
     }
 
+    $photoStmt = $pdo->prepare("SELECT image_path FROM project_asset_photos WHERE asset_id=:asset_id");
+    $photoStmt->execute([':asset_id' => $assetId]);
+    foreach ($photoStmt->fetchAll(PDO::FETCH_COLUMN) as $path) {
+        $GLOBALS['project_files_pending_delete'][] = $path;
+    }
     $stmt = $pdo->prepare("DELETE FROM assets WHERE id = :asset_id");
     $stmt->execute([':asset_id' => $assetId]);
+}
+
+function flush_project_pending_file_deletes(): void
+{
+    $paths = array_unique($GLOBALS['project_files_pending_delete'] ?? []);
+    $GLOBALS['project_files_pending_delete'] = [];
+    foreach ($paths as $path) upload_delete_file($path);
+}
+
+function track_project_new_uploads(array $paths): void
+{
+    foreach ($paths as $path) $GLOBALS['project_new_uploads'][] = $path;
+}
+
+function cleanup_project_new_uploads(): void
+{
+    $paths = array_unique($GLOBALS['project_new_uploads'] ?? []);
+    $GLOBALS['project_new_uploads'] = [];
+    foreach ($paths as $path) upload_delete_file($path);
+}
+
+function keep_project_new_uploads(): void
+{
+    $GLOBALS['project_new_uploads'] = [];
 }
 
 
 function upload_project_transaction_receipts($files, $transactionId, PDO $pdo)
 {
     $transactionId = (int) $transactionId;
-    if ($transactionId <= 0 || !isset($files) || empty($files['name'][0])) {
-        return 0;
-    }
-
-    $uploadDir = __DIR__ . '/../../uploads/project_transactions/';
-    if (!is_dir($uploadDir)) {
-        mkdir($uploadDir, 0777, true);
-    }
-
-    $allowedExt = ['jpg', 'jpeg', 'png', 'webp'];
-    $maxSize = 5 * 1024 * 1024;
-    $saved = [];
-
-    foreach ($files['name'] as $key => $name) {
-        if (($files['error'][$key] ?? UPLOAD_ERR_NO_FILE) === UPLOAD_ERR_NO_FILE) {
-            continue;
-        }
-        if ($files['error'][$key] !== UPLOAD_ERR_OK) {
-            throw new Exception('Ada foto bukti transaksi yang gagal diupload.');
-        }
-        if ($files['size'][$key] > $maxSize) {
-            throw new Exception('Ukuran setiap foto bukti maksimal 5MB.');
-        }
-
-        $ext = strtolower(pathinfo((string) $name, PATHINFO_EXTENSION));
-        if (!in_array($ext, $allowedExt, true)) {
-            throw new Exception('Format bukti harus JPG, JPEG, PNG, atau WEBP.');
-        }
-
-        $fileName = 'trx_' . $transactionId . '_' . date('YmdHis') . '_' . bin2hex(random_bytes(4)) . '.' . $ext;
-        $targetPath = $uploadDir . $fileName;
-
-        if (!move_uploaded_file($files['tmp_name'][$key], $targetPath)) {
-            throw new Exception('Gagal menyimpan foto bukti transaksi.');
-        }
-
-        $imagePath = 'uploads/project_transactions/' . $fileName;
+    if ($transactionId <= 0) return [];
+    $paths = upload_store_multiple($files, 'project_transactions', 'trx_' . $transactionId, upload_image_mimes(), 5242880, 10);
+    track_project_new_uploads($paths);
+    try {
         $stmt = $pdo->prepare("
             INSERT INTO project_transaction_receipts (transaction_id, image_path)
             VALUES (:transaction_id, :image_path)
         ");
-        $stmt->execute([
-            ':transaction_id' => $transactionId,
-            ':image_path' => $imagePath
-        ]);
-        $saved[] = ['image_path' => $imagePath];
+        foreach ($paths as $path) $stmt->execute([':transaction_id' => $transactionId, ':image_path' => $path]);
+    } catch (Throwable $e) {
+        foreach ($paths as $path) upload_delete_file($path);
+        throw $e;
     }
-
-    return $saved;
+    return array_map(static fn(string $path): array => ['image_path' => $path], $paths);
 }
 
 
@@ -357,45 +351,16 @@ function upload_project_fund_receipts($files, $fundId, PDO $pdo)
         return 0;
     }
 
-    $uploadDir = __DIR__ . '/../../uploads/project_funds/';
-    if (!is_dir($uploadDir)) {
-        mkdir($uploadDir, 0777, true);
-    }
-
-    $allowedExt = ['jpg', 'jpeg', 'png', 'webp'];
-    $maxSize = 5 * 1024 * 1024;
-    $saved = 0;
-
-    foreach ($files['name'] as $key => $name) {
-        if (($files['error'][$key] ?? UPLOAD_ERR_NO_FILE) === UPLOAD_ERR_NO_FILE) {
-            continue;
-        }
-        if ($files['error'][$key] !== UPLOAD_ERR_OK) {
-            throw new Exception('Ada foto bukti pendanaan yang gagal diupload.');
-        }
-        if ($files['size'][$key] > $maxSize) {
-            throw new Exception('Ukuran setiap foto bukti pendanaan maksimal 5MB.');
-        }
-        $ext = strtolower(pathinfo((string) $name, PATHINFO_EXTENSION));
-        if (!in_array($ext, $allowedExt, true)) {
-            throw new Exception('Format bukti pendanaan harus JPG, JPEG, PNG, atau WEBP.');
-        }
-
-        $fileName = 'fund_' . $fundId . '_' . date('YmdHis') . '_' . bin2hex(random_bytes(4)) . '.' . $ext;
-        $targetPath = $uploadDir . $fileName;
-        if (!move_uploaded_file($files['tmp_name'][$key], $targetPath)) {
-            throw new Exception('Gagal menyimpan foto bukti pendanaan.');
-        }
-
+    $paths = upload_store_multiple($files, 'project_funds', 'fund_' . $fundId, upload_image_mimes(), 5242880, 10);
+    track_project_new_uploads($paths);
+    try {
         $stmt = $pdo->prepare("\n            INSERT INTO project_fund_receipts (fund_id, file_path)\n            VALUES (:fund_id, :file_path)\n        ");
-        $stmt->execute([
-            ':fund_id' => $fundId,
-            ':file_path' => 'uploads/project_funds/' . $fileName
-        ]);
-        $saved++;
+        foreach ($paths as $path) $stmt->execute([':fund_id' => $fundId, ':file_path' => $path]);
+    } catch (Throwable $e) {
+        foreach ($paths as $path) upload_delete_file($path);
+        throw $e;
     }
-
-    return $saved;
+    return count($paths);
 }
 
 function upload_project_asset_photos($files, $assetId, PDO $pdo)
@@ -405,69 +370,30 @@ function upload_project_asset_photos($files, $assetId, PDO $pdo)
         return 0;
     }
 
-    $uploadDir = __DIR__ . '/../../uploads/assets/';
-    if (!is_dir($uploadDir)) {
-        mkdir($uploadDir, 0777, true);
-    }
-
-    $allowedExt = ['jpg', 'jpeg', 'png', 'webp'];
-    $maxSize = 5 * 1024 * 1024;
-    $saved = 0;
-    $firstPhotoPath = null;
-
-    foreach ($files['name'] as $key => $name) {
-        if (($files['error'][$key] ?? UPLOAD_ERR_NO_FILE) === UPLOAD_ERR_NO_FILE) {
-            continue;
-        }
-        if ($files['error'][$key] !== UPLOAD_ERR_OK) {
-            throw new Exception('Ada foto aset yang gagal diupload.');
-        }
-        if ($files['size'][$key] > $maxSize) {
-            throw new Exception('Ukuran setiap foto aset maksimal 5MB.');
-        }
-
-        $ext = strtolower(pathinfo((string) $name, PATHINFO_EXTENSION));
-        if (!in_array($ext, $allowedExt, true)) {
-            throw new Exception('Format foto aset harus JPG, JPEG, PNG, atau WEBP.');
-        }
-
-        $fileName = 'asset_' . $assetId . '_' . date('YmdHis') . '_' . bin2hex(random_bytes(4)) . '.' . $ext;
-        $targetPath = $uploadDir . $fileName;
-
-        if (!move_uploaded_file($files['tmp_name'][$key], $targetPath)) {
-            throw new Exception('Gagal menyimpan foto aset.');
-        }
-
-        $imagePath = 'uploads/assets/' . $fileName;
-        if ($firstPhotoPath === null) {
-            $firstPhotoPath = $imagePath;
-        }
-
+    $paths = upload_store_multiple($files, 'assets', 'asset_' . $assetId, upload_image_mimes(), 5242880, 10);
+    track_project_new_uploads($paths);
+    $firstPhotoPath = $paths[0] ?? null;
+    try {
         $stmt = $pdo->prepare("
             INSERT INTO project_asset_photos (asset_id, image_path)
             VALUES (:asset_id, :image_path)
         ");
-        $stmt->execute([
-            ':asset_id' => $assetId,
-            ':image_path' => $imagePath
-        ]);
-        $saved++;
-    }
+        foreach ($paths as $path) $stmt->execute([':asset_id' => $assetId, ':image_path' => $path]);
 
-    if ($firstPhotoPath !== null && project_asset_has_column($pdo, 'photo')) {
-        $stmt = $pdo->prepare("
-            UPDATE assets
-            SET photo = COALESCE(NULLIF(photo, ''), :photo)
-            WHERE id = :asset_id
-            LIMIT 1
-        ");
-        $stmt->execute([
-            ':photo' => $firstPhotoPath,
-            ':asset_id' => $assetId
-        ]);
+        if ($firstPhotoPath !== null && project_asset_has_column($pdo, 'photo')) {
+            $stmt = $pdo->prepare("
+                UPDATE assets
+                SET photo = COALESCE(NULLIF(photo, ''), :photo)
+                WHERE id = :asset_id
+                LIMIT 1
+            ");
+            $stmt->execute([':photo' => $firstPhotoPath, ':asset_id' => $assetId]);
+        }
+    } catch (Throwable $e) {
+        foreach ($paths as $path) upload_delete_file($path);
+        throw $e;
     }
-
-    return $saved;
+    return count($paths);
 }
 
 
@@ -730,25 +656,26 @@ function delete_project_evidence_file(PDO $pdo, $projectId, $evidenceType, $evid
         $delete = $pdo->prepare("DELETE FROM project_worker_receipts WHERE id = :id");
         $delete->execute([':id' => $evidenceId]);
     } elseif ($evidenceType === 'asset_photo' && project_table_exists($pdo, 'project_asset_photos')) {
-        $stmt = $pdo->prepare("\n            SELECT p.image_path\n            FROM project_asset_photos p\n            INNER JOIN assets a ON a.id = p.asset_id\n            LEFT JOIN project_transactions t ON t.id = a.source_transaction_id\n            WHERE p.id = :id AND (a.source_project_id = :asset_project_id OR t.project_id = :transaction_project_id)\n            LIMIT 1\n        ");
+        $stmt = $pdo->prepare("\n            SELECT p.image_path, p.asset_id\n            FROM project_asset_photos p\n            INNER JOIN assets a ON a.id = p.asset_id\n            LEFT JOIN project_transactions t ON t.id = a.source_transaction_id\n            WHERE p.id = :id AND (a.source_project_id = :asset_project_id OR t.project_id = :transaction_project_id)\n            LIMIT 1\n        ");
         $stmt->execute([':id' => $evidenceId, ':asset_project_id' => $projectId, ':transaction_project_id' => $projectId]);
-        $filePath = $stmt->fetchColumn();
+        $assetPhoto = $stmt->fetch(PDO::FETCH_ASSOC);
+        $filePath = $assetPhoto['image_path'] ?? null;
         if (!$filePath) {
             throw new Exception('Foto aset tidak ditemukan.');
         }
         $delete = $pdo->prepare("DELETE FROM project_asset_photos WHERE id = :id");
         $delete->execute([':id' => $evidenceId]);
+        if (project_asset_has_column($pdo, 'photo')) {
+            $nextPhoto = $pdo->prepare("SELECT image_path FROM project_asset_photos WHERE asset_id=:asset_id ORDER BY id ASC LIMIT 1");
+            $nextPhoto->execute([':asset_id' => (int)$assetPhoto['asset_id']]);
+            $pdo->prepare("UPDATE assets SET photo=CASE WHEN photo=:old_photo THEN :new_photo ELSE photo END WHERE id=:asset_id")
+                ->execute([':old_photo' => $filePath, ':new_photo' => $nextPhoto->fetchColumn() ?: null, ':asset_id' => (int)$assetPhoto['asset_id']]);
+        }
     } else {
         throw new Exception('Jenis bukti tidak dikenali.');
     }
 
-    if ($filePath && !preg_match('/^https?:\/\//i', (string) $filePath)) {
-        $fullPath = realpath(__DIR__ . '/../../' . ltrim((string) $filePath, '/'));
-        $uploadRoot = realpath(__DIR__ . '/../../uploads');
-        if ($fullPath && $uploadRoot && strpos($fullPath, $uploadRoot) === 0 && is_file($fullPath)) {
-            @unlink($fullPath);
-        }
-    }
+    if ($filePath && !preg_match('/^https?:\/\//i', (string) $filePath)) upload_delete_file($filePath);
 }
 
 function ensure_term_transaction(PDO $pdo, $projectId, $termId, array $termData, ?int $accountId = null, string $paymentMethod = 'bank_transfer')
@@ -756,13 +683,17 @@ function ensure_term_transaction(PDO $pdo, $projectId, $termId, array $termData,
     $projectId = (int) $projectId;
     $termId = (int) $termId;
 
-    $stmt = $pdo->prepare("SELECT transaction_id FROM project_payment_terms WHERE id = :term_id AND project_id = :project_id LIMIT 1");
+    $stmt = $pdo->prepare("SELECT transaction_id, posting_mode, historical_reason, paid_date FROM project_payment_terms WHERE id = :term_id AND project_id = :project_id LIMIT 1");
     $stmt->execute([':term_id' => $termId, ':project_id' => $projectId]);
     $current = $stmt->fetch(PDO::FETCH_ASSOC);
 
     $description = 'Pembayaran ' . (trim((string) ($termData['term_name'] ?? 'Termin')) ?: 'Termin');
     $amount = (float) ($termData['received_amount'] ?? 0);
     if ($amount <= 0) $amount = (float) ($termData['amount'] ?? 0);
+    $projectPostingMode = (($current['posting_mode'] ?? 'posted') === 'historical') ? 'historical' : 'posted';
+    $projectHistoricalReason = $projectPostingMode === 'historical' ? ($current['historical_reason'] ?? null) : null;
+    $transactionDate = $current['paid_date'] ?: date('Y-m-d');
+    if ($projectPostingMode === 'historical') $accountId = null;
 
     if (!empty($current['transaction_id'])) {
         $trxId = (int) $current['transaction_id'];
@@ -777,6 +708,9 @@ function ensure_term_transaction(PDO $pdo, $projectId, $termId, array $termData,
                 category = 'Pembayaran Termin',
                 description = :description,
                 amount = :amount,
+                posting_mode = :posting_mode,
+                historical_reason = :historical_reason,
+                transaction_date = :transaction_date,
                 is_asset = 0,
                 source_module = 'term',
                 source_id = :source_id
@@ -786,6 +720,9 @@ function ensure_term_transaction(PDO $pdo, $projectId, $termId, array $termData,
         $update->execute([
             ':description' => $description,
             ':amount' => $amount,
+            ':posting_mode' => $projectPostingMode,
+            ':historical_reason' => $projectHistoricalReason,
+            ':transaction_date' => $transactionDate,
             ':account_id' => $accountId,
             ':payment_method' => $paymentMethod,
             ':source_id' => $termId,
@@ -803,14 +740,17 @@ function ensure_term_transaction(PDO $pdo, $projectId, $termId, array $termData,
 
     $insert = $pdo->prepare("
         INSERT INTO project_transactions
-        (project_id, transaction_date, transaction_type, funding_source, person_name, personal_employee_id, account_id, payment_method, category, description, amount, is_asset, source_module, source_id)
+        (project_id, transaction_date, transaction_type, funding_source, person_name, personal_employee_id, account_id, payment_method, category, description, amount, posting_mode, historical_reason, is_asset, source_module, source_id)
         VALUES
-        (:project_id, CURDATE(), 'income', 'company', NULL, NULL, :account_id, :payment_method, 'Pembayaran Termin', :description, :amount, 0, 'term', :source_id)
+        (:project_id, :transaction_date, 'income', 'company', NULL, NULL, :account_id, :payment_method, 'Pembayaran Termin', :description, :amount, :posting_mode, :historical_reason, 0, 'term', :source_id)
     ");
     $insert->execute([
         ':project_id' => $projectId,
         ':description' => $description,
         ':amount' => $amount,
+        ':posting_mode' => $projectPostingMode,
+        ':historical_reason' => $projectHistoricalReason,
+        ':transaction_date' => $transactionDate,
         ':account_id' => $accountId,
         ':payment_method' => $paymentMethod,
         ':source_id' => $termId
@@ -1058,57 +998,27 @@ function project_gallery_type_label($type)
 
 function save_project_gallery_uploads($files, $projectId, $docType, $caption, PDO $pdo)
 {
-    if (!isset($files) || empty($files['name'][0])) {
-        return 0;
-    }
-
-    $uploadDir = __DIR__ . '/../../uploads/project_galleries/';
-    if (!is_dir($uploadDir)) {
-        mkdir($uploadDir, 0777, true);
-    }
-
-    $allowedExt = ['jpg', 'jpeg', 'png', 'gif', 'webp', 'pdf', 'doc', 'docx', 'xls', 'xlsx', 'ppt', 'pptx'];
-    $maxSize = 10 * 1024 * 1024;
-    $saved = 0;
-
-    foreach ($files['name'] as $key => $name) {
-        if (($files['error'][$key] ?? UPLOAD_ERR_NO_FILE) === UPLOAD_ERR_NO_FILE) {
-            continue;
-        }
-        if ($files['error'][$key] !== UPLOAD_ERR_OK) {
-            throw new Exception('Ada file yang gagal diupload.');
-        }
-        if ($files['size'][$key] > $maxSize) {
-            throw new Exception('Ukuran setiap file maksimal 10MB.');
-        }
-
-        $ext = strtolower(pathinfo($name, PATHINFO_EXTENSION));
-        if (!in_array($ext, $allowedExt, true)) {
-            throw new Exception('Format file tidak didukung. Gunakan gambar, PDF, Word, Excel, atau PowerPoint.');
-        }
-
-        $fileName = 'project_' . (int) $projectId . '_' . date('YmdHis') . '_' . bin2hex(random_bytes(4)) . '.' . $ext;
-        $targetPath = $uploadDir . $fileName;
-
-        if (!move_uploaded_file($files['tmp_name'][$key], $targetPath)) {
-            throw new Exception('Gagal menyimpan file.');
-        }
-
-        $filePath = 'uploads/project_galleries/' . $fileName;
+    $allowedMimes = upload_project_document_mimes() + ['image/gif' => 'gif'];
+    $paths = upload_store_multiple($files, 'project_galleries', 'project_' . (int)$projectId, $allowedMimes, 10485760, 5);
+    track_project_new_uploads($paths);
+    try {
         $stmt = $pdo->prepare("
             INSERT INTO project_galleries (project_id, image_type, image_path, caption)
             VALUES (:project_id, :image_type, :image_path, :caption)
         ");
-        $stmt->execute([
-            ':project_id' => $projectId,
-            ':image_type' => $docType,
-            ':image_path' => $filePath,
-            ':caption' => $caption ?: null,
-        ]);
-        $saved++;
+        foreach ($paths as $path) {
+            $stmt->execute([
+                ':project_id' => $projectId,
+                ':image_type' => $docType,
+                ':image_path' => $path,
+                ':caption' => $caption ?: null,
+            ]);
+        }
+    } catch (Throwable $e) {
+        foreach ($paths as $path) upload_delete_file($path);
+        throw $e;
     }
-
-    return $saved;
+    return count($paths);
 }
 
 function save_project_gallery_link($url, $projectId, $docType, $caption, PDO $pdo)
@@ -1165,14 +1075,16 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $caption = clean_input($_POST['caption'] ?? '');
             $externalUrl = trim((string) ($_POST['external_url'] ?? ''));
 
+            $pdo->beginTransaction();
             $savedFiles = save_project_gallery_uploads($_FILES['project_files'] ?? null, $id, $docType, $caption, $pdo);
             $savedLink = save_project_gallery_link($externalUrl, $id, $docType, $caption, $pdo);
 
             if (($savedFiles + $savedLink) <= 0) {
-                $_SESSION['error'] = 'Silakan upload minimal 1 file atau isi 1 link dokumen.';
-                redirect_detail($id, 'gallery');
+                throw new Exception('Silakan upload minimal 1 file atau isi 1 link dokumen.');
             }
 
+            $pdo->commit();
+            keep_project_new_uploads();
             $_SESSION['success'] = 'Dokumen & Gallery berhasil disimpan.';
             redirect_detail($id, 'gallery');
         }
@@ -1195,10 +1107,33 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $termName = clean_input($_POST['term_name'] ?? '');
             $percentage = post_percentage('percentage');
             $amount = post_amount('amount');
+            $historicalReceivedAmount = post_amount('received_amount');
             $dueDate = $_POST['due_date'] ?? '';
             $status = clean_input($_POST['status'] ?? 'unpaid');
             $paidDate = $_POST['paid_date'] ?? null;
             $notes = clean_input($_POST['notes'] ?? '');
+            $postingMode = finance_validate_posting_mode($_POST['posting_mode'] ?? 'posted', $_POST['historical_reason'] ?? null, true);
+            $historicalReason = $postingMode === 'posted' ? null : trim((string)($_POST['historical_reason'] ?? ''));
+            $termPaymentAccountId = (int)($_POST['term_payment_account_id'] ?? 0) ?: null;
+            $termPaymentMethod = finance_normalize_payment_method($_POST['term_payment_method'] ?? 'bank_transfer');
+            $historicalTaxAmount = 0;
+            $historicalTaxPercentage = 0;
+
+            if ($postingMode === 'historical') {
+                if (!$paidDate) throw new Exception('Tanggal pembayaran historis wajib diisi.');
+                if ($historicalReceivedAmount <= 0) throw new Exception('Nominal bersih historis wajib lebih dari nol.');
+                if ($historicalReceivedAmount > $amount) throw new Exception('Nominal bersih historis tidak boleh melebihi nilai termin.');
+                $historicalTaxAmount = max(0, $amount - $historicalReceivedAmount);
+                $historicalTaxPercentage = $amount > 0 ? round($historicalTaxAmount / $amount * 100, 2) : 0;
+                $status = 'paid';
+                $termPaymentAccountId = null;
+                $termPaymentMethod = 'other';
+            } elseif ($postingMode === 'opening_outstanding') {
+                $status = 'unpaid';
+                $paidDate = null;
+            } elseif ($status === 'paid' && !$termPaymentAccountId) {
+                throw new Exception('Pilih akun kas/bank tujuan untuk termin berjalan yang langsung dibayar.');
+            }
 
             if ($termName === '' || $amount <= 0 || $dueDate === '') {
                 $_SESSION['error'] = 'Data termin belum lengkap. Nama, nominal, dan tanggal jatuh tempo wajib diisi.';
@@ -1210,18 +1145,23 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
                 $stmt = $pdo->prepare("
                     INSERT INTO project_payment_terms
-                    (project_id, term_name, percentage, amount, due_date, paid_date, status, notes)
+                    (project_id, term_name, percentage, amount, tax_percentage, tax_amount, received_amount, due_date, paid_date, status, posting_mode, historical_reason, notes)
                     VALUES
-                    (:project_id, :term_name, :percentage, :amount, :due_date, :paid_date, :status, :notes)
+                    (:project_id, :term_name, :percentage, :amount, :tax_percentage, :tax_amount, :received_amount, :due_date, :paid_date, :status, :posting_mode, :historical_reason, :notes)
                 ");
                 $stmt->execute([
                     ':project_id' => $id,
                     ':term_name' => $termName,
                     ':percentage' => $percentage,
                     ':amount' => $amount,
+                    ':tax_percentage' => $postingMode === 'historical' ? $historicalTaxPercentage : 0,
+                    ':tax_amount' => $postingMode === 'historical' ? $historicalTaxAmount : 0,
+                    ':received_amount' => $postingMode === 'historical' ? $historicalReceivedAmount : 0,
                     ':due_date' => $dueDate,
                     ':paid_date' => $paidDate ?: ($status === 'paid' ? date('Y-m-d') : null),
                     ':status' => $status,
+                    ':posting_mode' => $postingMode,
+                    ':historical_reason' => $historicalReason,
                     ':notes' => $notes ?: null
                 ]);
                 $termId = (int) $pdo->lastInsertId();
@@ -1233,6 +1173,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     $transactionId = ensure_term_transaction($pdo, $id, $termId, [
                         'term_name' => $termName,
                         'amount' => $amount,
+                        'received_amount' => $postingMode === 'historical' ? $historicalReceivedAmount : 0,
                     ], $termPaymentAccountId, $termPaymentMethod);
                     $uploadedReceipts = upload_project_transaction_receipts($_FILES['receipt_images'] ?? null, $transactionId, $pdo);
                     $firstReceiptPath = is_array($uploadedReceipts) && !empty($uploadedReceipts) ? ($uploadedReceipts[0]['image_path'] ?? null) : null;
@@ -1242,6 +1183,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 }
 
                 $pdo->commit();
+                keep_project_new_uploads();
+                log_activity($pdo, 'Project Termin', 'CREATE', finance_posting_mode_label($postingMode) . ($historicalReason ? ' — ' . $historicalReason : ''), $termId, 'project_payment_terms');
                 $_SESSION['success'] = 'Termin berhasil ditambahkan.';
             } else {
                 $termId = (int) ($_POST['term_id'] ?? 0);
@@ -1256,6 +1199,23 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                         due_date = :due_date,
                         paid_date = :paid_date,
                         status = :status,
+                        posting_mode = :posting_mode,
+                        historical_reason = :historical_reason,
+                        received_amount = CASE
+                            WHEN :posting_mode_for_received = 'historical' THEN :historical_received_amount
+                            WHEN :posting_mode_for_opening = 'opening_outstanding' THEN 0
+                            ELSE received_amount
+                        END,
+                        tax_amount = CASE
+                            WHEN :posting_mode_for_tax_amount = 'historical' THEN :historical_tax_amount
+                            WHEN :posting_mode_for_opening_tax_amount = 'opening_outstanding' THEN 0
+                            ELSE tax_amount
+                        END,
+                        tax_percentage = CASE
+                            WHEN :posting_mode_for_tax_percentage = 'historical' THEN :historical_tax_percentage
+                            WHEN :posting_mode_for_opening_tax_percentage = 'opening_outstanding' THEN 0
+                            ELSE tax_percentage
+                        END,
                         notes = :notes,
                         updated_at = NOW()
                     WHERE id = :term_id AND project_id = :project_id
@@ -1269,6 +1229,17 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     ':due_date' => $dueDate,
                     ':paid_date' => $paidDate ?: ($status === 'paid' ? date('Y-m-d') : null),
                     ':status' => $status,
+                    ':posting_mode' => $postingMode,
+                    ':historical_reason' => $historicalReason,
+                    ':posting_mode_for_received' => $postingMode,
+                    ':posting_mode_for_opening' => $postingMode,
+                    ':historical_received_amount' => $historicalReceivedAmount,
+                    ':posting_mode_for_tax_amount' => $postingMode,
+                    ':posting_mode_for_opening_tax_amount' => $postingMode,
+                    ':historical_tax_amount' => $historicalTaxAmount,
+                    ':posting_mode_for_tax_percentage' => $postingMode,
+                    ':posting_mode_for_opening_tax_percentage' => $postingMode,
+                    ':historical_tax_percentage' => $historicalTaxPercentage,
                     ':notes' => $notes ?: null
                 ]);
 
@@ -1279,6 +1250,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     $transactionId = ensure_term_transaction($pdo, $id, $termId, [
                         'term_name' => $termName,
                         'amount' => $amount,
+                        'received_amount' => $postingMode === 'historical' ? $historicalReceivedAmount : 0,
                     ], $termPaymentAccountId, $termPaymentMethod);
                     $uploadedReceipts = upload_project_transaction_receipts($_FILES['receipt_images'] ?? null, $transactionId, $pdo);
                     $firstReceiptPath = is_array($uploadedReceipts) && !empty($uploadedReceipts) ? ($uploadedReceipts[0]['image_path'] ?? null) : null;
@@ -1293,6 +1265,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 }
 
                 $pdo->commit();
+                keep_project_new_uploads();
+                log_activity($pdo, 'Project Termin', 'UPDATE', finance_posting_mode_label($postingMode) . ($historicalReason ? ' — ' . $historicalReason : ''), $termId, 'project_payment_terms');
                 $_SESSION['success'] = 'Termin berhasil diperbarui.';
             }
 
@@ -1301,16 +1275,46 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
         if ($action === 'delete_term') {
             $termId = (int) ($_POST['term_id'] ?? 0);
+            $termFilesToDelete = [];
+            $termTransactionStmt = $pdo->prepare("SELECT id FROM project_transactions WHERE project_id=:project_id AND source_module='term' AND source_id=:term_id");
+            $termTransactionStmt->execute([':project_id' => $id, ':term_id' => $termId]);
+            $termTransactionIds = array_map('intval', $termTransactionStmt->fetchAll(PDO::FETCH_COLUMN));
 
             $pdo->beginTransaction();
 
+            $termStmt = $pdo->prepare("SELECT transaction_id FROM project_payment_terms WHERE id = :term_id AND project_id = :project_id LIMIT 1 FOR UPDATE");
+            $termStmt->execute([':term_id' => $termId, ':project_id' => $id]);
+            $termToDelete = $termStmt->fetch(PDO::FETCH_ASSOC);
+            if (!$termToDelete) {
+                throw new Exception('Termin tidak ditemukan pada project ini.');
+            }
+            if (!empty($termToDelete['transaction_id'])) $termTransactionIds[] = (int)$termToDelete['transaction_id'];
+            $termTransactionIds = array_values(array_unique($termTransactionIds));
+            if ($termTransactionIds) {
+                $in = implode(',', array_fill(0, count($termTransactionIds), '?'));
+                $receiptStmt = $pdo->prepare("SELECT image_path FROM project_transaction_receipts WHERE transaction_id IN ($in)");
+                $receiptStmt->execute($termTransactionIds);
+                $termFilesToDelete = $receiptStmt->fetchAll(PDO::FETCH_COLUMN);
+            }
+
             // Hapus piutang otomatis hanya jika belum ada pembayaran.
             finance_delete_project_term_receivable_if_unpaid($pdo, $termId);
+
+            // Bersihkan kedua lapisan transaksi (Project dan Finance Core).
+            finance_delete_project_term_transaction_if_exists($pdo, $termId);
+            if (!empty($termToDelete['transaction_id'])) {
+                $stmt = $pdo->prepare("DELETE FROM project_transactions WHERE id = :transaction_id AND project_id = :project_id AND source_module = 'term'");
+                $stmt->execute([':transaction_id' => (int)$termToDelete['transaction_id'], ':project_id' => $id]);
+            }
+            $stmt = $pdo->prepare("DELETE FROM project_transactions WHERE project_id = :project_id AND source_module = 'term' AND source_id = :term_id");
+            $stmt->execute([':project_id' => $id, ':term_id' => $termId]);
 
             $stmt = $pdo->prepare("DELETE FROM project_payment_terms WHERE id = :term_id AND project_id = :project_id");
             $stmt->execute([':term_id' => $termId, ':project_id' => $id]);
 
             $pdo->commit();
+            keep_project_new_uploads();
+            foreach (array_unique($termFilesToDelete) as $file) upload_delete_file($file);
 
             $_SESSION['success'] = 'Termin berhasil dihapus.';
             redirect_detail($id, 'terms');
@@ -1364,6 +1368,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             }
 
             $pdo->commit();
+            keep_project_new_uploads();
 
             $_SESSION['success'] = 'Termin ditandai lunas dan dana masuk ke akun kas/bank yang dipilih.';
             redirect_detail($id, 'terms');
@@ -1387,6 +1392,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $description = clean_input($_POST['description'] ?? '');
             $amount = post_amount('amount');
             $transactionDate = post_date_value('transaction_date', date('Y-m-d'));
+            $postingMode = finance_validate_posting_mode($_POST['posting_mode'] ?? 'posted', $_POST['historical_reason'] ?? null);
+            $historicalReason = $postingMode === 'historical' ? trim((string)($_POST['historical_reason'] ?? '')) : null;
             $isAsset = isset($_POST['is_asset']) ? 1 : 0;
             $assetInput = [
                 'asset_name' => clean_input($_POST['asset_name'] ?? ''),
@@ -1412,12 +1419,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 redirect_detail($id, 'transactions');
             }
 
-            if ($fundingSource === 'operational_fund' && $operationalFundId <= 0) {
+            if ($postingMode === 'posted' && $fundingSource === 'operational_fund' && $operationalFundId <= 0) {
                 $_SESSION['error'] = 'Dana Operasional personal wajib dipilih.';
                 redirect_detail($id, 'transactions');
             }
 
-            if ($fundingSource === 'company' && $accountId <= 0) {
+            if ($postingMode === 'posted' && $fundingSource === 'company' && $accountId <= 0) {
                 $_SESSION['error'] = 'Akun kas/bank perusahaan wajib dipilih jika transaksi menggunakan uang perusahaan.';
                 redirect_detail($id, 'transactions');
             }
@@ -1427,12 +1434,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 redirect_detail($id, 'transactions');
             }
 
+            $pdo->beginTransaction();
+
             if ($action === 'add_transaction') {
                 $stmt = $pdo->prepare("
                     INSERT INTO project_transactions
-                    (project_id, transaction_date, transaction_type, funding_source, person_name, personal_employee_id, operational_fund_id, account_id, payment_method, category, description, amount, is_asset, source_module, source_id)
+                    (project_id, transaction_date, transaction_type, funding_source, person_name, personal_employee_id, operational_fund_id, account_id, payment_method, category, description, amount, posting_mode, historical_reason, is_asset, source_module, source_id)
                     VALUES
-                    (:project_id, :transaction_date, :transaction_type, :funding_source, :person_name, :personal_employee_id, :operational_fund_id, :account_id, :payment_method, :category, :description, :amount, :is_asset, 'manual', NULL)
+                    (:project_id, :transaction_date, :transaction_type, :funding_source, :person_name, :personal_employee_id, :operational_fund_id, :account_id, :payment_method, :category, :description, :amount, :posting_mode, :historical_reason, :is_asset, 'manual', NULL)
                 ");
                 $stmt->execute([
                     ':project_id' => $id,
@@ -1447,6 +1456,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     ':category' => $category,
                     ':description' => $description ?: null,
                     ':amount' => $amount,
+                    ':posting_mode' => $postingMode,
+                    ':historical_reason' => $historicalReason,
                     ':is_asset' => $isAsset
                 ]);
                 $transactionId = (int) $pdo->lastInsertId();
@@ -1463,6 +1474,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $existingTransaction = $check->fetch(PDO::FETCH_ASSOC);
 
                 if (!$existingTransaction || is_auto_project_transaction($existingTransaction)) {
+                    $pdo->rollBack();
                     $_SESSION['error'] = 'Transaksi otomatis dari termin/pendanaan/pekerja tidak boleh diedit dari tabel transaksi. Silakan edit dari sesi asalnya.';
                     redirect_detail($id, 'transactions');
                 }
@@ -1480,6 +1492,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                         category = :category,
                         description = :description,
                         amount = :amount,
+                        posting_mode = :posting_mode,
+                        historical_reason = :historical_reason,
                         is_asset = :is_asset,
                         source_module = 'manual',
                         source_id = NULL
@@ -1499,6 +1513,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     ':category' => $category,
                     ':description' => $description ?: null,
                     ':amount' => $amount,
+                    ':posting_mode' => $postingMode,
+                    ':historical_reason' => $historicalReason,
                     ':is_asset' => $isAsset
                 ]);
                 $assetId = sync_project_transaction_asset($pdo, $id, $transactionId, $isAsset, $transactionType, $category, $description, $amount, $assetInput);
@@ -1512,6 +1528,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             if (function_exists('finance_sync_project_transaction')) {
                 finance_sync_project_transaction($pdo, $transactionId, $_SESSION['user_id'] ?? null);
             }
+            log_activity($pdo, 'Project Transaction', $action === 'add_transaction' ? 'CREATE' : 'UPDATE', finance_posting_mode_label($postingMode) . ($historicalReason ? ' — ' . $historicalReason : ''), $transactionId, 'project_transactions');
+
+            $pdo->commit();
+            keep_project_new_uploads();
+            flush_project_pending_file_deletes();
 
             redirect_detail($id, 'transactions');
         }
@@ -1527,12 +1548,27 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 redirect_detail($id, 'transactions');
             }
 
+            $filesToDelete = [];
+            $receiptStmt = $pdo->prepare("SELECT image_path FROM project_transaction_receipts WHERE transaction_id=:transaction_id");
+            $receiptStmt->execute([':transaction_id' => $transactionId]);
+            $filesToDelete = $receiptStmt->fetchAll(PDO::FETCH_COLUMN);
+            $assetIdToDelete = find_asset_id_by_project_transaction($pdo, $transactionId);
+            if ($assetIdToDelete > 0) {
+                $assetPhotoStmt = $pdo->prepare("SELECT image_path FROM project_asset_photos WHERE asset_id=:asset_id");
+                $assetPhotoStmt->execute([':asset_id' => $assetIdToDelete]);
+                $filesToDelete = array_merge($filesToDelete, $assetPhotoStmt->fetchAll(PDO::FETCH_COLUMN));
+            }
+            $pdo->beginTransaction();
             if (function_exists('finance_delete_project_transaction_if_exists')) {
                 finance_delete_project_transaction_if_exists($pdo, $transactionId);
             }
             delete_project_transaction_asset($pdo, $transactionId);
             $stmt = $pdo->prepare("DELETE FROM project_transactions WHERE id = :transaction_id AND project_id = :project_id AND source_module = 'manual'");
             $stmt->execute([':transaction_id' => $transactionId, ':project_id' => $id]);
+            $pdo->commit();
+            keep_project_new_uploads();
+            flush_project_pending_file_deletes();
+            foreach (array_unique($filesToDelete) as $file) upload_delete_file($file);
             $_SESSION['success'] = 'Transaksi berhasil dihapus.';
             redirect_detail($id, 'transactions');
         }
@@ -1726,6 +1762,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 }
 
                 $pdo->commit();
+                keep_project_new_uploads();
                 $_SESSION['success'] = 'Pekerja berhasil ditambahkan.';
             } else {
                 $workerId = (int) ($_POST['worker_id'] ?? 0);
@@ -1840,6 +1877,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 }
 
                 $pdo->commit();
+                keep_project_new_uploads();
                 $_SESSION['success'] = 'Data pekerja berhasil diperbarui.';
             }
 
@@ -1851,6 +1889,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $stmt = $pdo->prepare("SELECT transaction_id FROM project_workers WHERE id = :worker_id AND project_id = :project_id LIMIT 1");
             $stmt->execute([':worker_id' => $workerId, ':project_id' => $id]);
             $worker = $stmt->fetch(PDO::FETCH_ASSOC);
+            $workerFilesToDelete = [];
+            if (!empty($worker['transaction_id'])) {
+                $receiptStmt = $pdo->prepare("SELECT image_path FROM project_transaction_receipts WHERE transaction_id=:transaction_id");
+                $receiptStmt->execute([':transaction_id' => (int)$worker['transaction_id']]);
+                $workerFilesToDelete = $receiptStmt->fetchAll(PDO::FETCH_COLUMN);
+            }
 
             $pdo->beginTransaction();
             $stmt = $pdo->prepare("DELETE FROM project_workers WHERE id = :worker_id AND project_id = :project_id");
@@ -1865,6 +1909,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             }
 
             $pdo->commit();
+            keep_project_new_uploads();
+            foreach (array_unique($workerFilesToDelete) as $file) upload_delete_file($file);
 
             $_SESSION['success'] = 'Pekerja berhasil dihapus.';
             redirect_detail($id, 'workers');
@@ -1874,6 +1920,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         if ($pdo->inTransaction()) {
             $pdo->rollBack();
         }
+        cleanup_project_new_uploads();
         $_SESSION['error'] = 'Terjadi kesalahan: ' . $e->getMessage();
         redirect_detail($id, $activeTab);
     }
@@ -2631,6 +2678,7 @@ require_once __DIR__ . '/../../includes/sidebar.php';
                                         <td>
                                             <div class="fw-bold"><?= e($term['term_name']); ?></div>
                                             <div class="small text-muted"><?= $term['percentage'] !== null ? pct($term['percentage']) : '-'; ?></div>
+                                            <?php if (($term['posting_mode']??'posted')!=='posted'): ?><span class="badge text-bg-secondary rounded-pill mt-1"><?= ($term['posting_mode']??'')==='historical'?'Historis tanpa saldo':'Piutang saldo awal'; ?></span><?php endif; ?>
                                         </td>
                                         <td class="fw-bold"><?= rp($term['amount']); ?></td>
                                         <td><strong class="text-danger">- <?= rp($term['tax_amount'] ?? 0); ?></strong><div class="small text-muted"><?= (float)($term['tax_percentage'] ?? 0) > 0 ? pct($term['tax_percentage']) : 'Tanpa potongan'; ?></div></td>
@@ -2799,7 +2847,7 @@ require_once __DIR__ . '/../../includes/sidebar.php';
                             <tbody>
                                 <?php foreach ($transactions as $trx): ?>
                                     <tr>
-                                        <td><?= safe_date($trx['transaction_date'] ?? ($trx['created_at'] ?? null)); ?></td>
+                                        <td><?= safe_date($trx['transaction_date'] ?? ($trx['created_at'] ?? null)); ?><?php if (($trx['posting_mode']??'posted')==='historical'): ?><br><span class="badge text-bg-secondary rounded-pill">Historis tanpa saldo</span><?php endif; ?></td>
                                         <td><span class="badge text-bg-<?= $trx['transaction_type'] === 'income' ? 'success' : 'danger'; ?> rounded-pill"><?= e($trx['transaction_type']); ?></span></td>
                                         <td class="fw-semibold"><?= e($trx['category'] ?: '-'); ?></td>
                                         <td><?= e($trx['description'] ?: '-'); ?></td>
@@ -3122,14 +3170,15 @@ function render_project_evidence_modal($modalId, $title, array $items)
                 </div>
                 <div class="col-md-6">
                     <label class="form-label fw-semibold">Status</label>
-                    <select name="status" class="form-select">
+                    <select name="status" class="form-select project-term-status">
                         <option value="unpaid">Unpaid</option>
                         <option value="partial">Partial</option>
                         <option value="paid">Paid</option>
                         <option value="overdue">Overdue</option>
                     </select>
                 </div>
-                <div class="col-md-6">
+                <?php if (finance_user_can_use_non_posting()): ?><div class="col-md-12"><label class="form-label fw-semibold">Dampak Saldo</label><select name="posting_mode" class="form-select project-posting-mode"><option value="posted">Termin berjalan — pembayaran memengaruhi saldo</option><option value="historical">Historis sudah dibayar — tidak memengaruhi saldo</option><option value="opening_outstanding">Piutang awal masih terbuka — pembayaran berikutnya memengaruhi saldo</option></select></div><div class="col-md-6 d-none project-historical-paid-date"><label class="form-label fw-semibold">Tanggal Pembayaran Historis</label><input type="date" name="paid_date" class="form-control" disabled></div><div class="col-md-6 d-none project-historical-payment"><label class="form-label fw-semibold">Nominal Bersih Diterima (Historis)</label><input type="text" name="received_amount" class="form-control money-input historical-net-input" disabled><small class="text-muted">Isi nominal setelah potongan pajak.</small></div><div class="col-md-6 d-none project-historical-payment"><div class="alert alert-warning rounded-4 mb-0 h-100"><span class="small">Potongan pajak historis</span><div class="fw-bold fs-5 historical-tax-preview">Rp 0</div><small class="historical-tax-percent-preview">0%</small></div></div><div class="col-md-12 d-none project-historical-reason"><label class="form-label fw-semibold">Alasan / Referensi Historis</label><textarea name="historical_reason" class="form-control" rows="2"></textarea></div><?php endif; ?>
+                <div class="col-md-6 project-term-balance-field">
                     <label class="form-label fw-semibold">Jika Paid, Dana Masuk Ke Akun</label>
                     <select name="term_payment_account_id" class="form-select">
                         <option value="">Pilih akun kas/bank tujuan</option>
@@ -3138,7 +3187,7 @@ function render_project_evidence_modal($modalId, $title, array $items)
                         <?php endforeach; ?>
                     </select>
                 </div>
-                <div class="col-md-6">
+                <div class="col-md-6 project-term-balance-field">
                     <label class="form-label fw-semibold">Jika Paid, Metode Pembayaran</label>
                     <select name="term_payment_method" class="form-select">
                         <option value="bank_transfer">Bank Transfer</option>
@@ -3182,6 +3231,7 @@ function render_project_evidence_modal($modalId, $title, array $items)
                         <option value="income">Pemasukan Project</option>
                     </select>
                 </div>
+                <?php if (finance_user_can_use_non_posting()): ?><div class="col-md-6"><label class="form-label fw-semibold">Dampak Saldo</label><select name="posting_mode" class="form-select project-posting-mode"><option value="posted">Transaksi berjalan — memengaruhi saldo</option><option value="historical">Catatan historis — tidak memengaruhi saldo/dana/hutang</option></select></div><div class="col-12 d-none project-historical-reason"><label class="form-label fw-semibold">Alasan / Referensi Historis</label><textarea name="historical_reason" class="form-control" rows="2"></textarea></div><?php endif; ?>
                 <div class="col-md-6">
                     <label class="form-label fw-semibold">Kategori</label>
                     <input type="text" name="category" class="form-control" placeholder="Material / Transport / Vendor / dll" required>
@@ -3571,9 +3621,10 @@ function render_project_evidence_modal($modalId, $title, array $items)
                 <div class="col-md-3"><label class="form-label fw-semibold">Nominal</label><input type="text" name="amount" class="form-control money-input" value="<?= e(number_format($term['amount'], 0, ',', '.')); ?>" required></div>
                 <div class="col-md-6"><label class="form-label fw-semibold">Jatuh Tempo</label><input type="date" name="due_date" class="form-control" value="<?= e($term['due_date']); ?>" required></div>
                 <div class="col-md-3"><label class="form-label fw-semibold">Tanggal Bayar</label><input type="date" name="paid_date" class="form-control" value="<?= e($term['paid_date']); ?>"></div>
-                <div class="col-md-3"><label class="form-label fw-semibold">Status</label><select name="status" class="form-select"><?php foreach (['unpaid','partial','paid','overdue'] as $s): ?><option value="<?= $s; ?>" <?= $term['status'] === $s ? 'selected' : ''; ?>><?= $s; ?></option><?php endforeach; ?></select></div>
-                <div class="col-md-6"><label class="form-label fw-semibold">Jika Paid, Dana Masuk Ke Akun</label><select name="term_payment_account_id" class="form-select"><option value="">Pilih akun kas/bank tujuan</option><?php foreach ($financeAccounts as $acc): ?><option value="<?= (int)$acc['id']; ?>"><?= e($acc['account_name']); ?> - <?= rp($acc['current_balance'] ?? 0); ?></option><?php endforeach; ?></select></div>
-                <div class="col-md-6"><label class="form-label fw-semibold">Jika Paid, Metode Pembayaran</label><select name="term_payment_method" class="form-select"><option value="bank_transfer">Bank Transfer</option><option value="cash">Cash</option><option value="qris">QRIS</option><option value="other">Lainnya</option></select></div>
+                <div class="col-md-3"><label class="form-label fw-semibold">Status</label><select name="status" class="form-select project-term-status"><?php foreach (['unpaid','partial','paid','overdue'] as $s): ?><option value="<?= $s; ?>" <?= $term['status'] === $s ? 'selected' : ''; ?>><?= $s; ?></option><?php endforeach; ?></select></div>
+                <?php if (finance_user_can_use_non_posting()): ?><div class="col-md-12"><label class="form-label fw-semibold">Dampak Saldo</label><select name="posting_mode" class="form-select project-posting-mode"><option value="posted" <?= ($term['posting_mode']??'posted')==='posted'?'selected':''; ?>>Termin berjalan</option><option value="historical" <?= ($term['posting_mode']??'')==='historical'?'selected':''; ?>>Historis sudah dibayar — tanpa saldo</option><option value="opening_outstanding" <?= ($term['posting_mode']??'')==='opening_outstanding'?'selected':''; ?>>Piutang awal masih terbuka</option></select></div><div class="col-md-6 <?= ($term['posting_mode']??'posted')==='historical'?'':'d-none'; ?> project-historical-payment"><label class="form-label fw-semibold">Nominal Bersih Diterima (Historis)</label><input type="text" name="received_amount" class="form-control money-input historical-net-input" value="<?= e(number_format((float)($term['received_amount'] ?? 0) > 0 ? (float)$term['received_amount'] : (float)$term['amount'], 0, ',', '.')); ?>" <?= ($term['posting_mode']??'posted')==='historical'?'':'disabled'; ?>><small class="text-muted">Isi nominal setelah potongan pajak.</small></div><div class="col-md-6 <?= ($term['posting_mode']??'posted')==='historical'?'':'d-none'; ?> project-historical-payment"><div class="alert alert-warning rounded-4 mb-0 h-100"><span class="small">Potongan pajak historis</span><div class="fw-bold fs-5 historical-tax-preview">Rp <?= e(number_format((float)($term['tax_amount'] ?? 0), 0, ',', '.')); ?></div><small class="historical-tax-percent-preview"><?= e(number_format((float)($term['tax_percentage'] ?? 0), 2, ',', '.')); ?>%</small></div></div><div class="col-md-12 <?= ($term['posting_mode']??'posted')==='posted'?'d-none':''; ?> project-historical-reason"><label class="form-label fw-semibold">Alasan / Referensi Historis</label><textarea name="historical_reason" class="form-control" rows="2"><?= e($term['historical_reason'] ?? ''); ?></textarea></div><?php else: ?><input type="hidden" name="posting_mode" value="<?= e($term['posting_mode'] ?? 'posted'); ?>"><input type="hidden" name="historical_reason" value="<?= e($term['historical_reason'] ?? ''); ?>"><?php endif; ?>
+                <div class="col-md-6 project-term-balance-field"><label class="form-label fw-semibold">Jika Paid, Dana Masuk Ke Akun</label><select name="term_payment_account_id" class="form-select"><option value="">Pilih akun kas/bank tujuan</option><?php foreach ($financeAccounts as $acc): ?><option value="<?= (int)$acc['id']; ?>"><?= e($acc['account_name']); ?> - <?= rp($acc['current_balance'] ?? 0); ?></option><?php endforeach; ?></select></div>
+                <div class="col-md-6 project-term-balance-field"><label class="form-label fw-semibold">Jika Paid, Metode Pembayaran</label><select name="term_payment_method" class="form-select"><option value="bank_transfer">Bank Transfer</option><option value="cash">Cash</option><option value="qris">QRIS</option><option value="other">Lainnya</option></select></div>
                 
                 <div class="col-12 paid-proof-field">
                     <label class="form-label fw-semibold">Bukti Pembayaran Termin <span class="text-muted">(bisa lebih dari satu)</span></label>
@@ -3598,6 +3649,7 @@ function render_project_evidence_modal($modalId, $title, array $items)
             <div class="modal-header"><h5 class="modal-title fw-bold">Edit Transaksi</h5><button type="button" class="btn-close" data-bs-dismiss="modal"></button></div>
             <div class="modal-body row g-3">
                 <div class="col-md-6"><label class="form-label fw-semibold">Tipe</label><select name="transaction_type" class="form-select"><option value="expense" <?= $trx['transaction_type'] === 'expense' ? 'selected' : ''; ?>>Pengeluaran</option><option value="income" <?= $trx['transaction_type'] === 'income' ? 'selected' : ''; ?>>Pendapatan</option></select></div>
+                <?php if (finance_user_can_use_non_posting()): ?><div class="col-md-6"><label class="form-label fw-semibold">Dampak Saldo</label><select name="posting_mode" class="form-select project-posting-mode"><option value="posted" <?= ($trx['posting_mode']??'posted')==='posted'?'selected':''; ?>>Transaksi berjalan</option><option value="historical" <?= ($trx['posting_mode']??'')==='historical'?'selected':''; ?>>Catatan historis — tanpa saldo/dana/hutang</option></select></div><div class="col-12 <?= ($trx['posting_mode']??'posted')==='historical'?'':'d-none'; ?> project-historical-reason"><label class="form-label fw-semibold">Alasan / Referensi Historis</label><textarea name="historical_reason" class="form-control" rows="2"><?= e($trx['historical_reason'] ?? ''); ?></textarea></div><?php else: ?><input type="hidden" name="posting_mode" value="<?= e($trx['posting_mode'] ?? 'posted'); ?>"><input type="hidden" name="historical_reason" value="<?= e($trx['historical_reason'] ?? ''); ?>"><?php endif; ?>
                 <div class="col-md-6"><label class="form-label fw-semibold">Kategori</label><input type="text" name="category" class="form-control" value="<?= e($trx['category']); ?>" required></div>
                 <div class="col-md-6"><label class="form-label fw-semibold">Tanggal Transaksi</label><input type="date" name="transaction_date" class="form-control" value="<?= e($trx['transaction_date'] ?? date('Y-m-d')); ?>" required></div>
                 <div class="col-md-6"><label class="form-label fw-semibold">Sumber Dana</label><select name="funding_source" class="form-select funding-source"><option value="company" <?= $trx['funding_source'] === 'company' ? 'selected' : ''; ?>>Akun Perusahaan</option><option value="operational_fund" <?= ($trx['funding_source'] ?? '') === 'operational_fund' ? 'selected' : ''; ?>>Dana Operasional Personal</option><option value="person" <?= $trx['funding_source'] === 'person' ? 'selected' : ''; ?>>Talangan Personal</option></select></div>
@@ -3707,7 +3759,7 @@ function render_project_evidence_modal($modalId, $title, array $items)
                 <div class="col-md-6">
                     <label class="form-label fw-semibold">Upload File</label>
                     <input type="file" name="project_files[]" class="form-control" accept="image/*,.pdf,.doc,.docx,.xls,.xlsx,.ppt,.pptx" multiple>
-                    <div class="form-text">Bisa gambar, PDF, Word, Excel, atau PowerPoint. Maksimal 10MB per file.</div>
+                    <div class="form-text">Bisa gambar, PDF, Word, Excel, atau PowerPoint. Maksimal 5 file, masing-masing 10MB.</div>
                 </div>
                 <div class="col-12">
                     <label class="form-label fw-semibold">Link Google Drive / Google Docs / Dokumen Online</label>
@@ -4042,6 +4094,79 @@ document.addEventListener('DOMContentLoaded', function () {
         field.addEventListener('change', function () {
             refreshWorkerFields(this.closest('form'));
         });
+    });
+
+    document.querySelectorAll('.project-posting-mode').forEach(select => {
+        const form = select.closest('form');
+        const netInput = form?.querySelector('.historical-net-input');
+        const amountInput = form?.querySelector('[name="amount"]');
+        const taxPreview = form?.querySelector('.historical-tax-preview');
+        const taxPercentPreview = form?.querySelector('.historical-tax-percent-preview');
+        if (netInput && typeof netInput.dataset.autoGross === 'undefined') {
+            netInput.dataset.autoGross = netInput.value.trim() === '' ? '1' : '0';
+        }
+
+        const refreshHistoricalTax = function (useGrossAsDefault = false) {
+            if (!netInput || !amountInput || !taxPreview || !taxPercentPreview) return;
+            const gross = parseMoney(amountInput.value);
+            let received = parseMoney(netInput.value);
+            if (useGrossAsDefault && netInput.dataset.autoGross === '1' && gross > 0) {
+                received = gross;
+                netInput.value = formatNumber(gross);
+            }
+            const tax = Math.max(0, gross - Math.min(gross, received));
+            const percentage = gross > 0 ? tax / gross * 100 : 0;
+            taxPreview.textContent = 'Rp ' + formatNumber(tax);
+            taxPercentPreview.textContent = percentage.toFixed(2).replace('.', ',') + '%';
+        };
+
+        const sync = function () {
+            const historical = select.value === 'historical';
+            const nonPosted = select.value !== 'posted';
+            const status = form?.querySelector('.project-term-status');
+            if (status && nonPosted) status.value = historical ? 'paid' : 'unpaid';
+            if (status) status.disabled = nonPosted;
+
+            const paidDateBox = form?.querySelector('.project-historical-paid-date');
+            paidDateBox?.classList.toggle('d-none', !historical);
+            const paidDate = paidDateBox?.querySelector('[name="paid_date"]');
+            if (paidDate) {
+                paidDate.disabled = !historical;
+                paidDate.required = historical;
+            }
+
+            form?.querySelectorAll('.project-historical-payment').forEach(field => {
+                field.classList.toggle('d-none', !historical);
+                field.querySelectorAll('input, select, textarea').forEach(input => {
+                    input.disabled = !historical;
+                });
+            });
+            if (netInput) netInput.required = historical;
+
+            form?.querySelectorAll('.project-term-balance-field').forEach(field => {
+                field.classList.toggle('d-none', nonPosted);
+                field.querySelectorAll('input, select, textarea').forEach(input => {
+                    input.disabled = nonPosted;
+                });
+            });
+
+            const box = form?.querySelector('.project-historical-reason');
+            box?.classList.toggle('d-none', !nonPosted);
+            const reason = box?.querySelector('[name="historical_reason"]');
+            if (reason) reason.required = nonPosted;
+            refreshHistoricalTax(historical);
+        };
+
+        netInput?.addEventListener('input', function () {
+            this.dataset.autoGross = '0';
+            this.value = formatNumber(this.value);
+            refreshHistoricalTax();
+        });
+        amountInput?.addEventListener('input', function () {
+            refreshHistoricalTax(select.value === 'historical');
+        });
+        select.addEventListener('change', sync);
+        sync();
     });
 
     const ctx = document.getElementById('financeChart');

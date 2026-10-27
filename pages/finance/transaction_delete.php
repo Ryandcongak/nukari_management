@@ -20,6 +20,12 @@ try {
     $pdo->beginTransaction();
 
     $accountId = !empty($t['account_id']) ? (int)$t['account_id'] : null;
+    $filesToDelete = array_filter([$t['proof_file'] ?? null]);
+    $linkedFilesStmt = $pdo->prepare("SELECT proof_file FROM debts WHERE source_table='transactions' AND source_id=:id AND proof_file IS NOT NULL");
+    $linkedFilesStmt->execute([':id' => $id]);
+    $filesToDelete = array_merge($filesToDelete, $linkedFilesStmt->fetchAll(PDO::FETCH_COLUMN));
+
+    finance_delete_manual_transaction_links($pdo, $id);
 
     $stmt = $pdo->prepare("DELETE FROM transactions WHERE id = :id");
     $stmt->execute([':id' => $id]);
@@ -29,9 +35,10 @@ try {
     }
 
     $pdo->commit();
+    foreach (array_unique($filesToDelete) as $file) upload_delete_file($file);
 
     redirect('pages/finance/transactions.php?message=Transaksi berhasil dihapus');
-} catch (Exception $e) {
+} catch (Throwable $e) {
     if ($pdo->inTransaction()) $pdo->rollBack();
     redirect('pages/finance/transactions.php?error=' . urlencode($e->getMessage()));
 }

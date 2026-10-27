@@ -21,6 +21,7 @@ $employees = $pdo->query("SELECT id, full_name FROM employees WHERE employment_s
 $projects = $pdo->query("SELECT id, project_name FROM projects WHERE deleted_at IS NULL ORDER BY project_name ASC")->fetchAll(PDO::FETCH_ASSOC);
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+    $newProofFile = null;
     try {
         $employeeId = !empty($_POST['employee_id']) ? (int)$_POST['employee_id'] : null;
         $requesterName = clean_input($_POST['requester_name'] ?? '');
@@ -31,6 +32,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $amount = rmb_money_to_number($_POST['amount'] ?? 0);
         $description = clean_input($_POST['description'] ?? '');
         $proofFile = rmb_upload_file('proof_file', $r['proof_file']);
+        if ($proofFile !== ($r['proof_file'] ?? null)) $newProofFile = $proofFile;
 
         if ($employeeId) {
             $stmt = $pdo->prepare("SELECT full_name FROM employees WHERE id = :id LIMIT 1");
@@ -109,10 +111,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         }
 
         $pdo->commit();
+        if ($newProofFile) upload_delete_file($r['proof_file'] ?? null);
 
         redirect('pages/reimbursements/detail.php?id=' . $id . '&message=Data berhasil diperbarui');
-    } catch (Exception $e) {
+    } catch (Throwable $e) {
         if ($pdo->inTransaction()) $pdo->rollBack();
+        upload_delete_file($newProofFile);
         $error = $e->getMessage();
     }
 }

@@ -3,7 +3,9 @@ require_once __DIR__ . '/../../includes/auth.php';
 require_once __DIR__ . '/../../includes/payroll_workforce_helper.php';
 require_once __DIR__ . '/../../includes/payroll_additions_helper.php';
 require_once __DIR__ . '/../../includes/attendance_overtime_helper.php';
+require_once __DIR__ . '/../../includes/employee_funding_helper.php';
 require_once __DIR__ . '/../finance/helpers.php';
+require_once __DIR__ . '/../../includes/activity_log.php';
 
 $pageTitle = 'Detail Payroll - Nukari';
 
@@ -27,8 +29,7 @@ if ($currentUserId <= 0) {
     $currentUserId = null;
 }
 
-$currentUserRole = strtolower((string)($_SESSION['role'] ?? $_SESSION['user_role'] ?? 'admin'));
-$canUnlockPayroll = in_array($currentUserRole, ['admin', 'super_admin', 'superadmin', 'director', 'direktur', 'owner'], true);
+$canUnlockPayroll = has_role('super_admin');
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') === 'unlock_payroll') {
     $reason = trim($_POST['unlock_reason'] ?? '');
@@ -40,6 +41,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') === 'unloc
     } else {
         try {
             $pdo->beginTransaction();
+            employee_cash_advance_restore_for_payroll($pdo, $id);
             finance_delete_payroll_transaction_if_exists($pdo, $id);
             opfund_delete_movements_by_source($pdo, 'payroll', 'payrolls', $id);
 
@@ -53,6 +55,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') === 'unloc
                     payment_party_id = NULL,
                     payment_account_id = NULL,
                     payment_transaction_id = NULL,
+                    payment_posting_mode = 'posted',
+                    payment_historical_reason = NULL,
                     is_locked = 0,
                     unlocked_at = NOW(),
                     unlocked_by = :unlocked_by,
@@ -69,6 +73,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') === 'unloc
             ]);
 
             if ($unlockStmt->rowCount() > 0) {
+                log_activity($pdo, 'Payroll', 'UNLOCK', 'Membuka kembali payroll yang sudah Paid & Locked. Alasan: ' . $reason, $id, 'payrolls', $currentUserId);
                 $pdo->commit();
                 header('Location: ' . base_url('pages/payroll/detail.php?id=' . $id . '&unlocked=1'));
                 exit;

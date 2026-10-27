@@ -11,9 +11,6 @@ if($id>0){
     $stmt=$pdo->prepare("DELETE FROM products WHERE id=?");
     $stmt->execute([$id]);
 
-    if (!empty($p['photo']) && !preg_match('~^https?://~i', $p['photo'])) {
-        $path = __DIR__ . '/../../' . ltrim($p['photo'], '/');
-        if (is_file($path)) @unlink($path);
-    }
+    upload_delete_file($p['photo'] ?? null);
 }
 header('Location: index.php');exit;

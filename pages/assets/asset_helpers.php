@@ -12,29 +12,25 @@ if (!function_exists('asset_money_value')) {
 
 if (!function_exists('asset_upload_file')) {
     function asset_upload_file($file, $folder = 'assets', $prefix = 'file', $allowedExt = ['jpg','jpeg','png','webp','pdf']) {
-        if (empty($file['name']) || empty($file['tmp_name']) || ($file['error'] ?? UPLOAD_ERR_NO_FILE) !== UPLOAD_ERR_OK) return null;
-        $ext = strtolower(pathinfo((string)$file['name'], PATHINFO_EXTENSION));
-        if (!in_array($ext, $allowedExt, true)) {
-            throw new Exception('Format file tidak didukung. Gunakan: ' . strtoupper(implode(', ', $allowedExt)) . '.');
-        }
-        validate_upload($file, ['image/jpeg','image/png','image/webp','application/pdf']);
-        $uploadDir = __DIR__ . '/../../uploads/' . trim($folder, '/') . '/';
-        if (!is_dir($uploadDir)) mkdir($uploadDir, 0775, true);
-        $fileName = $prefix . '_' . date('YmdHis') . '_' . bin2hex(random_bytes(4)) . '.' . $ext;
-        if (!move_uploaded_file($file['tmp_name'], $uploadDir . $fileName)) {
-            throw new Exception('Gagal mengupload file.');
-        }
-        return 'uploads/' . trim($folder, '/') . '/' . $fileName;
+        $allowedExt = array_map('strtolower', $allowedExt);
+        $allowedMimes = array_filter(
+            upload_document_mimes(),
+            static fn(string $extension): bool => in_array($extension, $allowedExt, true)
+        );
+        return upload_store_file($file, trim($folder, '/'), $prefix, $allowedMimes);
     }
 }
 
 if (!function_exists('asset_create_transaction')) {
-    function asset_create_transaction(PDO $pdo, $type, $amount, $description, $paymentMethod = 'cash', $proofFile = null, ?int $projectId = null, ?int $assetId = null, ?int $accountId = null, ?string $transactionDate = null) {
+    function asset_create_transaction(PDO $pdo, $type, $amount, $description, $paymentMethod = 'cash', $proofFile = null, ?int $projectId = null, ?int $assetId = null, ?int $accountId = null, ?string $transactionDate = null, string $postingMode = 'posted', ?string $historicalReason = null) {
         $amount = (float)$amount;
+        $postingMode = finance_normalize_posting_mode($postingMode);
+        $transactionDate = $transactionDate ?: date('Y-m-d');
+        finance_validate_posting_date($pdo, $transactionDate, $postingMode);
         if ($amount <= 0) {
             throw new Exception('Nominal transaksi aset wajib lebih dari nol.');
         }
-        if ($type === 'expense') {
+        if ($type === 'expense' && $postingMode === 'posted') {
             if (!$accountId) {
                 throw new Exception('Akun kas/bank wajib dipilih untuk pengeluaran aset.');
             }
@@ -49,12 +45,16 @@ if (!function_exists('asset_create_transaction')) {
             }
         }
         $code = strtoupper($type === 'income' ? 'INC' : 'EXP') . '-AST-' . date('YmdHis') . '-' . strtoupper(bin2hex(random_bytes(2)));
-        $stmt = $pdo->prepare("INSERT INTO transactions (transaction_code, transaction_date, type, category_id, account_id, project_id, amount, description, payment_method, proof_file, source_module, source_table, source_id, created_by) VALUES (:code, :transaction_date, :type, NULL, :account_id, :project_id, :amount, :description, :payment_method, :proof_file, 'asset', 'assets', :source_id, :created_by)");
+        $stmt = $pdo->prepare("INSERT INTO transactions (transaction_code, transaction_date, type, category_id, account_id, project_id, amount, posting_mode, historical_reason, posted_at, posted_by, description, payment_method, proof_file, source_module, source_table, source_id, created_by) VALUES (:code, :transaction_date, :type, NULL, :account_id, :project_id, :amount, :posting_mode, :historical_reason, :posted_at, :posted_by, :description, :payment_method, :proof_file, 'asset', 'assets', :source_id, :created_by)");
         $stmt->execute([
             ':code' => $code,
-            ':transaction_date' => $transactionDate ?: date('Y-m-d'),
+            ':transaction_date' => $transactionDate,
             ':type' => $type,
             ':amount' => $amount,
+            ':posting_mode' => $postingMode,
+            ':historical_reason' => $postingMode === 'historical' ? $historicalReason : null,
+            ':posted_at' => $postingMode === 'posted' ? date('Y-m-d H:i:s') : null,
+            ':posted_by' => $postingMode === 'posted' ? ($_SESSION['user_id'] ?? null) : null,
             ':description' => $description,
             ':payment_method' => $paymentMethod,
             ':proof_file' => $proofFile,
@@ -72,8 +72,9 @@ if (!function_exists('asset_create_transaction')) {
 }
 
 if (!function_exists('asset_create_project_mirror')) {
-    function asset_create_project_mirror(PDO $pdo, int $projectId, string $type, float $amount, string $category, string $description, string $sourceModule, int $sourceId, string $paymentMethod = 'cash', ?int $accountId = null, ?string $transactionDate = null): int {
-        $stmt = $pdo->prepare("INSERT INTO project_transactions (project_id, transaction_date, transaction_type, funding_source, account_id, payment_method, category, description, amount, is_asset, source_module, source_id) VALUES (:project_id, :transaction_date, :transaction_type, 'company', :account_id, :payment_method, :category, :description, :amount, 0, :source_module, :source_id)");
+    function asset_create_project_mirror(PDO $pdo, int $projectId, string $type, float $amount, string $category, string $description, string $sourceModule, int $sourceId, string $paymentMethod = 'cash', ?int $accountId = null, ?string $transactionDate = null, string $postingMode = 'posted', ?string $historicalReason = null): int {
+        $postingMode = finance_normalize_posting_mode($postingMode);
+        $stmt = $pdo->prepare("INSERT INTO project_transactions (project_id, transaction_date, transaction_type, funding_source, account_id, payment_method, category, description, amount, posting_mode, historical_reason, is_asset, source_module, source_id) VALUES (:project_id, :transaction_date, :transaction_type, 'company', :account_id, :payment_method, :category, :description, :amount, :posting_mode, :historical_reason, 0, :source_module, :source_id)");
         $stmt->execute([
             ':project_id' => $projectId,
             ':transaction_date' => $transactionDate ?: date('Y-m-d'),
@@ -83,6 +84,8 @@ if (!function_exists('asset_create_project_mirror')) {
             ':category' => $category,
             ':description' => $description,
             ':amount' => $amount,
+            ':posting_mode' => $postingMode,
+            ':historical_reason' => $postingMode === 'historical' ? $historicalReason : null,
             ':source_module' => $sourceModule,
             ':source_id' => $sourceId,
         ]);

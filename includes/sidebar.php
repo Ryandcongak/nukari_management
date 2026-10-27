@@ -47,15 +47,32 @@ $isProductsOpen = strpos($currentPath, 'products') !== false && !$isCashierOpen;
     ================================= -->
     <nav class="nav flex-column">
 
+        <?php if (is_report_only_role()): ?>
+        <div class="nav-section-title">Laporan</div>
+
+        <a class="nav-link <?= is_active_menu('reports', $currentPath); ?>" href="<?= base_url('pages/reports/index.php'); ?>">
+            <i class="bi bi-file-earmark-bar-graph me-2"></i> Ringkasan Manajemen
+        </a>
+
+        <div class="nav-section-title">Bantuan</div>
+
+        <a class="nav-link <?= is_active_menu('help', $currentPath); ?>" href="<?= base_url('pages/help/index.php'); ?>">
+            <i class="bi bi-question-circle me-2"></i> Panduan Penggunaan
+        </a>
+
+        <?php else: ?>
+
         <div class="nav-section-title">Main</div>
 
         <a class="nav-link <?= is_active_menu('dashboard', $currentPath); ?>" href="<?= base_url('pages/dashboard.php'); ?>">
             <i class="bi bi-speedometer2 me-2"></i> Dashboard
         </a>
 
-        <a class="nav-link <?= is_active_menu('users', $currentPath); ?>" href="<?= base_url('pages/users/index.php'); ?>">
-            <i class="bi bi-people me-2"></i> User Management
-        </a>
+        <?php if (has_permission('users.manage')): ?>
+            <a class="nav-link <?= is_active_menu('users', $currentPath); ?>" href="<?= base_url('pages/users/index.php'); ?>">
+                <i class="bi bi-people me-2"></i> User Management
+            </a>
+        <?php endif; ?>
 
         <div class="nav-section-title">HR & Payroll</div>
 
@@ -87,9 +104,11 @@ $isProductsOpen = strpos($currentPath, 'products') !== false && !$isCashierOpen;
                 <i class="bi bi-circle me-2 small"></i> Setting Payroll
             </a>
 
-            <a class="nav-link ms-3 <?= is_active_menu('hr/analytics.php', $currentPath); ?>" href="<?= base_url('pages/hr/analytics.php'); ?>">
-                <i class="bi bi-circle me-2 small"></i> HR Analytics
-            </a>
+            <?php if (has_permission('operations.manage')): ?>
+                <a class="nav-link ms-3 <?= is_active_menu('hr/analytics.php', $currentPath); ?>" href="<?= base_url('pages/hr/analytics.php'); ?>">
+                    <i class="bi bi-circle me-2 small"></i> HR Analytics
+                </a>
+            <?php endif; ?>
         </div>
 
         <div class="nav-section-title">Operations</div>
@@ -149,6 +168,8 @@ $isProductsOpen = strpos($currentPath, 'products') !== false && !$isCashierOpen;
         <a class="nav-link <?= is_active_menu('help', $currentPath); ?>" href="<?= base_url('pages/help/index.php'); ?>">
             <i class="bi bi-question-circle me-2"></i> Panduan Penggunaan
         </a>
+
+        <?php endif; ?>
 
         <hr class="border-light opacity-25">
 

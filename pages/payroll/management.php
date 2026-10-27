@@ -461,10 +461,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $operationalFundId = (int)($_POST['operational_fund_id'] ?? 0);
             $fundingPartyId = (int)($_POST['funding_party_id'] ?? 0);
             $paymentMethod = $_POST['payment_method'] ?? 'cash';
+            $historicalReason = trim($_POST['historical_reason'] ?? '');
+            $postingMode = finance_validate_posting_mode($_POST['posting_mode'] ?? 'posted', $historicalReason);
+            $historicalReason = $postingMode === 'historical' ? $historicalReason : null;
             $pdo->beginTransaction();
             $stmt = $pdo->prepare("
-                INSERT INTO employee_cash_advances (employee_id, advance_date, amount, remaining_amount, deduction_month, proof_file, status, notes, funding_source, account_id, operational_fund_id, funding_party_id, disbursement_status, payment_method, created_by)
-                VALUES (:employee_id, :advance_date, :amount, :remaining_amount, :deduction_month, :proof_file, 'active', :notes, :funding_source, :account_id, :operational_fund_id, :funding_party_id, 'disbursed', :payment_method, :created_by)
+                INSERT INTO employee_cash_advances (employee_id, advance_date, amount, remaining_amount, deduction_month, proof_file, status, notes, funding_source, account_id, operational_fund_id, funding_party_id, disbursement_status, posting_mode, historical_reason, payment_method, created_by)
+                VALUES (:employee_id, :advance_date, :amount, :remaining_amount, :deduction_month, :proof_file, 'active', :notes, :funding_source, :account_id, :operational_fund_id, :funding_party_id, 'disbursed', :posting_mode, :historical_reason, :payment_method, :created_by)
             ");
             $stmt->execute([
                 ':employee_id' => $employeeId,
@@ -478,11 +481,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 ':account_id' => $accountId ?: null,
                 ':operational_fund_id' => $operationalFundId ?: null,
                 ':funding_party_id' => $fundingPartyId ?: null,
+                ':posting_mode' => $postingMode,
+                ':historical_reason' => $historicalReason,
                 ':payment_method' => $paymentMethod,
                 ':created_by' => $currentUserId
             ]);
             $newCashId = (int)$pdo->lastInsertId();
-            $fundingLinks = employee_funding_disburse($pdo, 'employee_cash_advances', $newCashId, $amount, $advanceDate, $fundingSource, $accountId ?: null, $operationalFundId ?: null, $fundingPartyId ?: null, $paymentMethod, 'Pencairan kasbon karyawan #' . $newCashId, $currentUserId);
+            $fundingLinks = employee_funding_disburse($pdo, 'employee_cash_advances', $newCashId, $amount, $advanceDate, $fundingSource, $accountId ?: null, $operationalFundId ?: null, $fundingPartyId ?: null, $paymentMethod, 'Pencairan kasbon karyawan #' . $newCashId, $currentUserId, $postingMode, $historicalReason);
             $pdo->prepare("UPDATE employee_cash_advances SET transaction_id=:transaction_id, debt_id=:debt_id WHERE id=:id")->execute([':transaction_id'=>$fundingLinks['transaction_id'], ':debt_id'=>$fundingLinks['debt_id'], ':id'=>$newCashId]);
             log_activity($pdo, 'Kasbon', 'CREATE', 'Menambahkan kasbon periode potong ' . $deductionMonth . ' sebesar ' . pm_money($amount) . '.', $newCashId, 'employee_cash_advances', $currentUserId);
             $pdo->commit();
@@ -614,10 +619,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $operationalFundId = (int)($_POST['operational_fund_id'] ?? 0);
             $fundingPartyId = (int)($_POST['funding_party_id'] ?? 0);
             $paymentMethod = $_POST['payment_method'] ?? 'cash';
+            $postingMode = $loanOrigin === 'opening_balance' ? 'historical' : ($_POST['posting_mode'] ?? 'posted');
+            $historicalReason = $loanOrigin === 'opening_balance' ? 'Saldo awal pinjaman sebelum penggunaan sistem' : trim($_POST['historical_reason'] ?? '');
+            $postingMode = finance_validate_posting_mode($postingMode,$historicalReason);
+            $historicalReason = $postingMode === 'historical' ? trim($historicalReason) : null;
             $pdo->beginTransaction();
             $stmt = $pdo->prepare("
-                INSERT INTO employee_loans (employee_id, loan_date, loan_origin, loan_amount, opening_paid_amount, opening_balance_date, total_paid, remaining_amount, status, notes, funding_source, account_id, operational_fund_id, funding_party_id, disbursement_status, payment_method, created_by)
-                VALUES (:employee_id, :loan_date, :loan_origin, :loan_amount, :opening_paid_amount, :opening_balance_date, :total_paid, :remaining_amount, 'active', :notes, :funding_source, :account_id, :operational_fund_id, :funding_party_id, :disbursement_status, :payment_method, :created_by)
+                INSERT INTO employee_loans (employee_id, loan_date, loan_origin, loan_amount, opening_paid_amount, opening_balance_date, total_paid, remaining_amount, status, notes, funding_source, account_id, operational_fund_id, funding_party_id, disbursement_status, posting_mode, historical_reason, payment_method, created_by)
+                VALUES (:employee_id, :loan_date, :loan_origin, :loan_amount, :opening_paid_amount, :opening_balance_date, :total_paid, :remaining_amount, 'active', :notes, :funding_source, :account_id, :operational_fund_id, :funding_party_id, :disbursement_status, :posting_mode, :historical_reason, :payment_method, :created_by)
             ");
             $stmt->execute([
                 ':employee_id' => $employeeId,
@@ -635,11 +644,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 ':funding_party_id' => $fundingPartyId ?: null,
                 ':payment_method' => $paymentMethod,
                 ':disbursement_status' => $loanOrigin === 'opening_balance' ? 'draft' : 'disbursed',
+                ':posting_mode' => $postingMode,
+                ':historical_reason' => $historicalReason,
                 ':created_by' => $currentUserId
             ]);
             $newLoanId = (int)$pdo->lastInsertId();
             if ($loanOrigin === 'new_disbursement') {
-                $fundingLinks = employee_funding_disburse($pdo, 'employee_loans', $newLoanId, $loanAmount, $loanDate, $fundingSource, $accountId ?: null, $operationalFundId ?: null, $fundingPartyId ?: null, $paymentMethod, 'Pencairan pinjaman karyawan #' . $newLoanId, $currentUserId);
+                $fundingLinks = employee_funding_disburse($pdo, 'employee_loans', $newLoanId, $loanAmount, $loanDate, $fundingSource, $accountId ?: null, $operationalFundId ?: null, $fundingPartyId ?: null, $paymentMethod, 'Pencairan pinjaman karyawan #' . $newLoanId, $currentUserId, $postingMode, $historicalReason);
                 $pdo->prepare("UPDATE employee_loans SET transaction_id=:transaction_id, debt_id=:debt_id WHERE id=:id")->execute([':transaction_id'=>$fundingLinks['transaction_id'], ':debt_id'=>$fundingLinks['debt_id'], ':id'=>$newLoanId]);
             }
             log_activity($pdo, 'Loan', 'CREATE', 'Menambahkan pinjaman karyawan sebesar ' . pm_money($loanAmount) . ' tanggal ' . $loanDate . '.', $newLoanId, 'employee_loans', $currentUserId);
@@ -1503,6 +1514,10 @@ require_once __DIR__ . '/../../includes/sidebar.php';
                     <div class="col-md-4 employee-funding-choice d-none" data-source="operational_fund"><label class="form-label fw-semibold">Dana Operasional PIC</label><select name="operational_fund_id" class="form-select"><option value="">Pilih dana PIC</option><?php foreach ($fundingOptions['funds'] as $fund): ?><option value="<?= (int)$fund['id']; ?>"><?= htmlspecialchars($fund['display_name'] ?: $fund['person_name']); ?> · <?= pm_money($fund['current_balance']); ?></option><?php endforeach; ?></select></div>
                     <div class="col-md-4 employee-funding-choice d-none" data-source="party_advance"><label class="form-label fw-semibold">Pihak/PIC Penalang</label><select name="funding_party_id" class="form-select"><option value="">Pilih pihak/PIC</option><?php foreach ($fundingOptions['parties'] as $party): ?><option value="<?= (int)$party['id']; ?>"><?= htmlspecialchars($party['display_name']); ?></option><?php endforeach; ?></select></div>
                     <div class="col-md-4"><label class="form-label fw-semibold">Metode Pencairan</label><select name="payment_method" class="form-select"><option value="cash">Cash</option><option value="bank_transfer">Transfer Bank</option><option value="qris">QRIS</option><option value="other">Lainnya</option></select></div>
+                    <?php if (finance_user_can_use_non_posting()): ?>
+                    <div class="col-md-4"><label class="form-label fw-semibold">Pengaruh ke Saldo</label><select name="posting_mode" class="form-select posting-mode"><option value="posted">Kasbon baru — kurangi saldo</option><option value="historical">Kasbon lama — tidak ubah saldo</option></select></div>
+                    <div class="col-md-8 historical-reason d-none"><label class="form-label fw-semibold">Alasan Catatan Lama</label><input type="text" name="historical_reason" class="form-control" placeholder="Wajib untuk catatan lama"></div>
+                    <?php else: ?><input type="hidden" name="posting_mode" value="posted"><?php endif; ?>
                     <div class="col-md-12"><label class="form-label fw-semibold">Catatan</label><textarea name="notes" class="form-control" rows="3"></textarea></div>
                 </div>
             </div>
@@ -1564,6 +1579,10 @@ require_once __DIR__ . '/../../includes/sidebar.php';
                     <div class="col-md-4 employee-funding-choice d-none" data-source="operational_fund"><label class="form-label fw-semibold">Dana Operasional PIC</label><select name="operational_fund_id" class="form-select"><option value="">Pilih dana PIC</option><?php foreach ($fundingOptions['funds'] as $fund): ?><option value="<?= (int)$fund['id']; ?>"><?= htmlspecialchars($fund['display_name'] ?: $fund['person_name']); ?> · <?= pm_money($fund['current_balance']); ?></option><?php endforeach; ?></select></div>
                     <div class="col-md-4 employee-funding-choice d-none" data-source="party_advance"><label class="form-label fw-semibold">Pihak/PIC Penalang</label><select name="funding_party_id" class="form-select"><option value="">Pilih pihak/PIC</option><?php foreach ($fundingOptions['parties'] as $party): ?><option value="<?= (int)$party['id']; ?>"><?= htmlspecialchars($party['display_name']); ?></option><?php endforeach; ?></select></div>
                     <div class="col-md-4"><label class="form-label fw-semibold">Metode Pencairan</label><select name="payment_method" class="form-select"><option value="cash">Cash</option><option value="bank_transfer">Transfer Bank</option><option value="qris">QRIS</option><option value="other">Lainnya</option></select></div>
+                    <?php if (finance_user_can_use_non_posting()): ?>
+                    <div class="col-md-4"><label class="form-label fw-semibold">Pengaruh ke Saldo</label><select name="posting_mode" class="form-select posting-mode"><option value="posted">Pencairan baru — kurangi saldo</option><option value="historical">Pencairan lama — tidak ubah saldo</option></select></div>
+                    <div class="col-md-8 historical-reason d-none"><label class="form-label fw-semibold">Alasan Catatan Lama</label><input type="text" name="historical_reason" class="form-control" placeholder="Wajib untuk catatan lama"></div>
+                    <?php else: ?><input type="hidden" name="posting_mode" value="posted"><?php endif; ?>
                     <div class="col-md-12"><label class="form-label fw-semibold">Catatan</label><textarea name="notes" class="form-control" rows="3"></textarea></div>
                 </div>
             </div>
@@ -1711,6 +1730,16 @@ require_once __DIR__ . '/../../includes/sidebar.php';
             }
             select.addEventListener('change', updateFundingFields);
             updateFundingFields();
+        });
+
+        document.querySelectorAll('.posting-mode').forEach(function(select) {
+            const form = select.closest('form');
+            const reason = form?.querySelector('.historical-reason');
+            function updatePostingMode() {
+                reason?.classList.toggle('d-none', select.value !== 'historical');
+            }
+            select.addEventListener('change', updatePostingMode);
+            updatePostingMode();
         });
 
         const employeeFilterId = <?= json_encode($employeeFilterId); ?>;

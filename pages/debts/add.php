@@ -11,6 +11,7 @@ $employees = $pdo->query("SELECT id, full_name FROM employees WHERE employment_s
 $accounts = $pdo->query("SELECT id,account_name,current_balance FROM finance_accounts WHERE status='active' ORDER BY is_default DESC,account_name")->fetchAll(PDO::FETCH_ASSOC);
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+    $proof_file = null;
     try {
         $type = in_array($_POST['type'] ?? '', ['debt','receivable'], true) ? $_POST['type'] : 'debt';
         $related_type = in_array($_POST['related_type'] ?? '', ['supplier','client','employee','personal','project','other'], true) ? $_POST['related_type'] : 'other';
@@ -30,21 +31,25 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $payment_method = $_POST['payment_method'] ?: null;
         $description = clean_input($_POST['description'] ?? '');
         $reminder_days_before = max((int)($_POST['reminder_days_before'] ?? 7), 0);
-        $proof_file = upload_debt_file('proof_file');
+        $proof_file = debt_upload_file('proof_file');
+        $postingMode = finance_validate_posting_mode($_POST['posting_mode'] ?? 'posted', $_POST['historical_reason'] ?? null, true);
+        if ($postingMode === 'historical') throw new Exception('Hutang/piutang yang masih terbuka gunakan mode Saldo awal masih terbuka, bukan Historis selesai.');
+        $historicalReason = $postingMode === 'opening_outstanding' ? trim((string)($_POST['historical_reason'] ?? '')) : null;
+        finance_validate_posting_date($pdo, $issue_date, $postingMode);
 
         if ($related_name === '') {
-            $error = 'Nama pihak terkait wajib diisi.';
+            throw new Exception('Nama pihak terkait wajib diisi.');
         } elseif ($amount <= 0) {
-            $error = 'Nominal harus lebih dari 0.';
+            throw new Exception('Nominal harus lebih dari 0.');
         } else {
             $code = debt_code_generate($pdo, $type);
-            if ($type === 'debt' && !$receivingAccountId) throw new Exception('Pilih rekening tujuan penerimaan dana pinjaman.');
+            if ($postingMode === 'posted' && $type === 'debt' && !$receivingAccountId) throw new Exception('Pilih rekening tujuan penerimaan dana pinjaman.');
             $pdo->beginTransaction();
             $stmt = $pdo->prepare("
                 INSERT INTO debts
-                (debt_code, type, related_type, related_id, related_name, project_id, category, issue_date, amount, principal_amount, interest_percentage, interest_amount, receiving_account_id, paid_amount, due_date, payment_method, proof_file, reminder_days_before, status, description, created_by, created_at, updated_at)
+                (debt_code, type, related_type, related_id, related_name, project_id, category, issue_date, amount, principal_amount, interest_percentage, interest_amount, receiving_account_id, paid_amount, due_date, payment_method, proof_file, reminder_days_before, status, posting_mode, historical_reason, description, created_by, created_at, updated_at)
                 VALUES
-                (:debt_code, :type, :related_type, :related_id, :related_name, :project_id, :category, :issue_date, :amount, :principal, :interest_percentage, :interest_amount, :receiving_account, 0, :due_date, :payment_method, :proof_file, :reminder_days_before, 'unpaid', :description, :created_by, NOW(), NOW())
+                (:debt_code, :type, :related_type, :related_id, :related_name, :project_id, :category, :issue_date, :amount, :principal, :interest_percentage, :interest_amount, :receiving_account, 0, :due_date, :payment_method, :proof_file, :reminder_days_before, 'unpaid', :posting_mode, :historical_reason, :description, :created_by, NOW(), NOW())
             ");
             $stmt->execute([
                 ':debt_code' => $code,
@@ -64,11 +69,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 ':payment_method' => $payment_method,
                 ':proof_file' => $proof_file,
                 ':reminder_days_before' => $reminder_days_before,
+                ':posting_mode' => $postingMode,
+                ':historical_reason' => $historicalReason,
                 ':description' => $description ?: null,
                 ':created_by' => $_SESSION['user_id'] ?? null
             ]);
             $debtId=(int)$pdo->lastInsertId();
-            if($type==='debt'){
+            if($type==='debt' && $postingMode==='posted'){
                 $transactionCode=finance_generate_transaction_code($pdo,'income');
                 $pdo->prepare("INSERT INTO transactions(transaction_code,transaction_date,type,account_id,project_id,amount,description,payment_method,proof_file,source_module,source_table,source_id,reference_code,created_by,created_at,updated_at) VALUES(:code,:date,'income',:account,:project,:amount,:description,:method,:proof,'other','debts',:source,:reference,:user,NOW(),NOW())")
                     ->execute([':code'=>$transactionCode,':date'=>$issue_date,':account'=>$receivingAccountId,':project'=>$project_id,':amount'=>$principalAmount,':description'=>'Penerimaan pinjaman dari '.$related_name,':method'=>$payment_method?:'bank_transfer',':proof'=>$proof_file,':source'=>$debtId,':reference'=>$code,':user'=>$_SESSION['user_id']??null]);
@@ -76,11 +83,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $pdo->prepare("UPDATE debts SET funding_transaction_id=:tx WHERE id=:id")->execute([':tx'=>$fundingTx,':id'=>$debtId]);
                 finance_recalculate_account_balance($pdo,$receivingAccountId);
             }
+            log_activity($pdo, 'Debt', 'CREATE', finance_posting_mode_label($postingMode) . ($historicalReason ? ' — ' . $historicalReason : ''), $debtId, 'debts');
             $pdo->commit();
             redirect('pages/debts/index.php?message=Data hutang/piutang berhasil ditambahkan');
         }
-    } catch (Exception $e) {
+    } catch (Throwable $e) {
         if ($pdo->inTransaction()) $pdo->rollBack();
+        upload_delete_file($proof_file);
         $error = $e->getMessage();
     }
 }
@@ -104,6 +113,7 @@ require_once __DIR__ . '/../../includes/sidebar.php';
                     <option value="receivable">Piutang</option>
                 </select>
             </div>
+            <?php if (finance_user_can_use_non_posting()): ?><div class="col-md-8"><label class="form-label fw-semibold">Dampak Saldo</label><select name="posting_mode" id="postingMode" class="form-select"><option value="posted">Hutang/piutang berjalan</option><option value="opening_outstanding">Saldo awal masih terbuka — penerimaan/pembayaran awal tidak diposting ulang</option></select></div><div class="col-md-12 d-none" id="historicalReasonField"><label class="form-label fw-semibold">Alasan / Referensi Saldo Awal</label><textarea name="historical_reason" class="form-control" rows="2"></textarea></div><?php endif; ?>
             <div class="col-md-4">
                 <label class="form-label fw-semibold">Tipe Pihak</label>
                 <select name="related_type" class="form-select">
@@ -200,5 +210,7 @@ document.querySelectorAll('.money-input').forEach(function(input){
         this.value = value.replace(/\B(?=(\d{3})+(?!\d))/g, '.');
     });
 });
+function syncPostingMode(){const field=document.getElementById('postingMode');if(!field)return;const opening=field.value==='opening_outstanding';document.getElementById('historicalReasonField').classList.toggle('d-none',!opening);document.querySelector('[name="historical_reason"]').required=opening;}
+if(document.getElementById('postingMode')){document.getElementById('postingMode').addEventListener('change',syncPostingMode);syncPostingMode();}
 </script>
 <?php require_once __DIR__ . '/../../includes/footer.php'; ?>

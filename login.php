@@ -10,7 +10,9 @@ send_security_headers();
 
 require_once __DIR__ . '/config/database.php';
 
-$error = '';
+$error = isset($_GET['role_invalid'])
+    ? 'Role akun belum sesuai dengan konfigurasi sistem. Hubungi Superadmin.'
+    : '';
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     verify_csrf_or_abort();
@@ -31,6 +33,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         if ($user && password_verify($password, $user['password'])) {
             if ($user['status'] !== 'active') {
                 $error = 'Akun Anda belum aktif atau sedang dinonaktifkan.';
+            } elseif (!is_valid_app_role((string)$user['role'])) {
+                $error = 'Role akun belum sesuai dengan konfigurasi sistem. Hubungi Superadmin.';
             } else {
                 session_regenerate_id(true);
                 $_SESSION['user_id'] = $user['id'];
@@ -41,7 +45,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $update = $pdo->prepare("UPDATE users SET last_login = NOW() WHERE id = :id");
                 $update->execute([':id' => $user['id']]);
 
-                redirect('pages/dashboard.php');
+                redirect(default_page_for_role((string)$user['role']));
             }
         } else {
             $error = 'Username/email atau password salah.';

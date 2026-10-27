@@ -1,5 +1,6 @@
 <?php
 require_once __DIR__ . '/../../includes/auth.php';
+require_once __DIR__ . '/../../includes/finance_helper.php';
 require_once __DIR__ . '/../../includes/project_status_helper.php';
 
 $id = $_GET['id'] ?? null;
@@ -28,27 +29,29 @@ $error = '';
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
     try {
+        $transactionIds = [];
+        if (!empty($term['transaction_id'])) $transactionIds[] = (int)$term['transaction_id'];
+        $linkedTransactions = $pdo->prepare("SELECT id FROM project_transactions WHERE project_id=:project_id AND source_module='term' AND source_id=:term_id");
+        $linkedTransactions->execute([':project_id' => (int)$term['project_id'], ':term_id' => (int)$id]);
+        $transactionIds = array_values(array_unique(array_merge($transactionIds, array_map('intval', $linkedTransactions->fetchAll(PDO::FETCH_COLUMN)))));
+        $filesToDelete = [];
+        if ($transactionIds) {
+            $in = implode(',', array_fill(0, count($transactionIds), '?'));
+            $receiptStmt = $pdo->prepare("SELECT image_path FROM project_transaction_receipts WHERE transaction_id IN ($in)");
+            $receiptStmt->execute($transactionIds);
+            $filesToDelete = $receiptStmt->fetchAll(PDO::FETCH_COLUMN);
+        }
         $pdo->beginTransaction();
 
-        // =========================
-        // HAPUS TRANSAKSI JIKA PAID
-        // =========================
-        if ($term['status'] === 'paid') {
+        finance_delete_project_term_receivable_if_unpaid($pdo, (int)$id);
+        finance_delete_project_term_transaction_if_exists($pdo, (int)$id);
 
-            $deleteTrx = $pdo->prepare("
-                DELETE FROM project_transactions
-                WHERE project_id = :project_id
-                AND transaction_type = 'income'
-                AND category = 'Termin Pembayaran'
-                AND description LIKE :desc
-                LIMIT 1
-            ");
-
-            $deleteTrx->execute([
-                ':project_id' => $term['project_id'],
-                ':desc' => 'Pembayaran ' . $term['term_name'] . '%'
-            ]);
+        if (!empty($term['transaction_id'])) {
+            $deleteTrx = $pdo->prepare("DELETE FROM project_transactions WHERE id = :transaction_id AND project_id = :project_id AND source_module = 'term'");
+            $deleteTrx->execute([':transaction_id' => (int)$term['transaction_id'], ':project_id' => (int)$term['project_id']]);
         }
+        $deleteTrx = $pdo->prepare("DELETE FROM project_transactions WHERE project_id = :project_id AND source_module = 'term' AND source_id = :term_id");
+        $deleteTrx->execute([':project_id' => (int)$term['project_id'], ':term_id' => (int)$id]);
 
         // =========================
         // HAPUS TERMIN
@@ -62,12 +65,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $delete->execute([':id' => $id]);
 
         $pdo->commit();
+        foreach (array_unique($filesToDelete) as $file) upload_delete_file($file);
         project_sync_completion_status($pdo, (int)$term['project_id']);
 
         redirect('pages/projects/terms.php?project_id=' . $term['project_id']);
-    } catch (Exception $e) {
-        $pdo->rollBack();
-        $error = 'Gagal menghapus termin.';
+    } catch (Throwable $e) {
+        if ($pdo->inTransaction()) $pdo->rollBack();
+        $error = 'Gagal menghapus termin: ' . $e->getMessage();
     }
 }
 

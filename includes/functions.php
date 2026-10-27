@@ -1,5 +1,7 @@
 <?php
 
+require_once __DIR__ . '/upload_helper.php';
+
 function request_is_https(): bool
 {
     $forwardedProto = strtolower(first_proxy_value($_SERVER['HTTP_X_FORWARDED_PROTO'] ?? ''));
@@ -108,7 +110,89 @@ function is_logged_in()
 
 function has_role(...$roles)
 {
-    return isset($_SESSION['role']) && in_array($_SESSION['role'], $roles);
+    return isset($_SESSION['role']) && in_array($_SESSION['role'], $roles, true);
+}
+
+/**
+ * Empat role resmi aplikasi. Nama internal dibuat stabil agar dapat dipakai
+ * oleh migrasi, session, pengujian, dan seluruh pemeriksaan server-side.
+ */
+function app_roles(): array
+{
+    return [
+        'super_admin' => 'Superadmin / CEO',
+        'admin' => 'Admin',
+        'director' => 'Direktur',
+        'commissioner' => 'Komisaris',
+    ];
+}
+
+function is_valid_app_role(string $role): bool
+{
+    return array_key_exists($role, app_roles());
+}
+
+function app_role_label(string $role): string
+{
+    return app_roles()[$role] ?? ucwords(str_replace('_', ' ', $role));
+}
+
+function role_permissions(): array
+{
+    return [
+        'super_admin' => ['*'],
+        'admin' => [
+            'operations.view',
+            'operations.manage',
+            'reports.view',
+            'reports.export',
+            'payroll.pay',
+            'notifications.view',
+        ],
+        'director' => [
+            'reports.view',
+            'reports.export',
+            'notifications.view',
+        ],
+        'commissioner' => [
+            'reports.view',
+            'reports.export',
+            'notifications.view',
+        ],
+    ];
+}
+
+function role_has_permission(string $role, string $permission): bool
+{
+    $permissions = role_permissions()[$role] ?? [];
+    return in_array('*', $permissions, true) || in_array($permission, $permissions, true);
+}
+
+function has_permission(string $permission): bool
+{
+    return isset($_SESSION['role'])
+        && role_has_permission((string)$_SESSION['role'], $permission);
+}
+
+function require_permission(string $permission): void
+{
+    if (!has_permission($permission)) {
+        http_response_code(403);
+        exit('Anda tidak memiliki izin untuk membuka halaman atau menjalankan tindakan ini.');
+    }
+}
+
+function is_report_only_role(?string $role = null): bool
+{
+    $role = $role ?? (string)($_SESSION['role'] ?? '');
+    return in_array($role, ['director', 'commissioner'], true);
+}
+
+function default_page_for_role(?string $role): string
+{
+    return is_report_only_role((string)$role)
+        ? 'pages/reports/index.php'
+        : 'pages/dashboard.php';
 }
 
 function rupiah($angka)
@@ -123,7 +207,7 @@ function clean_input($data)
 
 function current_user_name()
 {
-    return $_SESSION['name'] ?? $_SESSION['username'] ?? 'System';
+    return $_SESSION['full_name'] ?? $_SESSION['name'] ?? $_SESSION['username'] ?? 'System';
 }
 
 function csrf_token(): string

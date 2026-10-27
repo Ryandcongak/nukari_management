@@ -13,6 +13,7 @@ $categories = $pdo->query("SELECT id, category_name FROM transaction_categories 
 $projects = $pdo->query("SELECT id, project_name FROM projects WHERE deleted_at IS NULL ORDER BY project_name ASC")->fetchAll(PDO::FETCH_ASSOC);
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+    $proofFile = null;
     try {
         if (($_POST['action'] ?? '') === 'add_category') {
             $categoryName = trim($_POST['category_name'] ?? '');
@@ -30,9 +31,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $fundingSource=$type==='expense'?($_POST['funding_source']??'company'):'company';
         $operationalFundId=(int)($_POST['operational_fund_id']??0);$fundingPartyId=(int)($_POST['funding_party_id']??0);$shortagePartyId=(int)($_POST['shortage_party_id']??0);
         if(!in_array($fundingSource,['company','operational_fund','party_advance'],true))$fundingSource='company';
-        if($type==='expense'&&$fundingSource==='company'&&!$accountId)throw new Exception('Pilih akun kas/bank perusahaan.');
-        if($type==='expense'&&$fundingSource==='operational_fund'&&!$operationalFundId)throw new Exception('Pilih Dana Operasional PIC.');
-        if($type==='expense'&&$fundingSource==='party_advance'&&!$fundingPartyId)throw new Exception('Pilih Pihak/PIC penalang.');
+        $postingMode = finance_validate_posting_mode($_POST['posting_mode'] ?? 'posted', $_POST['historical_reason'] ?? null);
+        $historicalReason = $postingMode === 'historical' ? trim((string)($_POST['historical_reason'] ?? '')) : null;
+        finance_validate_posting_date($pdo, $transactionDate, $postingMode);
+        if($postingMode==='posted'&&($type==='income'||($type==='expense'&&$fundingSource==='company'))&&!$accountId)throw new Exception('Pilih akun kas/bank perusahaan.');
+        if($postingMode==='posted'&&$type==='expense'&&$fundingSource==='operational_fund'&&!$operationalFundId)throw new Exception('Pilih Dana Operasional PIC.');
+        if($postingMode==='posted'&&$type==='expense'&&$fundingSource==='party_advance'&&!$fundingPartyId)throw new Exception('Pilih Pihak/PIC penalang.');
         if($fundingSource!=='company')$accountId=null;
         $categoryId = !empty($_POST['category_id']) ? (int)$_POST['category_id'] : null;
         $projectId = !empty($_POST['project_id']) ? (int)$_POST['project_id'] : null;
@@ -52,9 +56,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
         $stmt = $pdo->prepare("
             INSERT INTO transactions
-            (transaction_code, transaction_date, transaction_name, type, category_id, account_id, project_id, amount, description, payment_method, proof_file, source_module, source_table, source_id, reference_code, created_by, created_at, updated_at)
+            (transaction_code, transaction_date, transaction_name, type, category_id, account_id, project_id, amount, posting_mode, historical_reason, posted_at, posted_by, description, payment_method, proof_file, source_module, source_table, source_id, reference_code, created_by, created_at, updated_at)
             VALUES
-            (:code, :date, :transaction_name, :type, :category_id, :account_id, :project_id, :amount, :description, :payment_method, :proof_file, 'manual', NULL, NULL, :reference_code, :created_by, NOW(), NOW())
+            (:code, :date, :transaction_name, :type, :category_id, :account_id, :project_id, :amount, :posting_mode, :historical_reason, :posted_at, :posted_by, :description, :payment_method, :proof_file, 'manual', NULL, NULL, :reference_code, :created_by, NOW(), NOW())
         ");
         $stmt->execute([
             ':code' => f_transaction_code($pdo, $type),
@@ -65,6 +69,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             ':account_id' => $accountId,
             ':project_id' => $projectId,
             ':amount' => $amount,
+            ':posting_mode' => $postingMode,
+            ':historical_reason' => $historicalReason,
+            ':posted_at' => $postingMode === 'posted' ? date('Y-m-d H:i:s') : null,
+            ':posted_by' => $postingMode === 'posted' ? ($_SESSION['user_id'] ?? null) : null,
             ':description' => $description ?: null,
             ':payment_method' => $paymentMethod,
             ':proof_file' => $proofFile,
@@ -73,14 +81,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         ]);
         $transactionId=(int)$pdo->lastInsertId();
 
-        if($type==='expense'&&$fundingSource==='operational_fund'){
+        if($postingMode==='posted'&&$type==='expense'&&$fundingSource==='operational_fund'){
             opfund_add_movement($pdo,$operationalFundId,'expense',$amount,$transactionDate,null,$transactionName.($description?' - '.$description:''),'finance','transactions',$transactionId,$projectId,$paymentMethod,$_SESSION['user_id']??null);
         }
-        if($type==='expense'&&$fundingSource==='party_advance'){
+        if($postingMode==='posted'&&$type==='expense'&&$fundingSource==='party_advance'){
             $partyStmt=$pdo->prepare("SELECT display_name FROM company_parties WHERE id=:id AND status='active'");$partyStmt->execute([':id'=>$fundingPartyId]);$partyName=$partyStmt->fetchColumn();if(!$partyName)throw new Exception('Pihak/PIC penalang tidak ditemukan.');
             $debtStmt=$pdo->prepare("INSERT INTO debts(debt_code,type,related_type,related_id,related_name,category,issue_date,amount,principal_amount,paid_amount,payment_method,source_module,source_table,source_id,reference_code,status,description,created_by,created_at,updated_at) VALUES(:code,'debt','personal',:party,:name,'Talangan Operasional',:date,:amount,:principal,0,:method,'other','transactions',:source_id,:reference,'unpaid',:description,:user,NOW(),NOW())");$debtStmt->execute([':code'=>finance_generate_debt_code($pdo,'debt'),':party'=>$fundingPartyId,':name'=>$partyName,':date'=>$transactionDate,':amount'=>$amount,':principal'=>$amount,':method'=>$paymentMethod,':source_id'=>$transactionId,':reference'=>$referenceCode?:'TRX-'.$transactionId,':description'=>$transactionName.($description?' - '.$description:''),':user'=>$_SESSION['user_id']??null]);
         }
-        if($type==='expense'&&$fundingSource==='company'&&$accountId){
+        if($postingMode==='posted'&&$type==='expense'&&$fundingSource==='company'&&$accountId){
             $balance=0;foreach($accounts as $account){if((int)$account['id']===$accountId){$balance=(float)$account['current_balance'];break;}}$shortfall=max(0,$amount-max(0,$balance));
             if($shortfall>0){if(!$shortagePartyId)throw new Exception('Saldo akun tidak cukup. Pilih Pihak/PIC yang menalangi kekurangan '.rupiah($shortfall).'.');$partyStmt=$pdo->prepare("SELECT display_name FROM company_parties WHERE id=:id AND status='active'");$partyStmt->execute([':id'=>$shortagePartyId]);$partyName=$partyStmt->fetchColumn();if(!$partyName)throw new Exception('Pihak/PIC penalang tidak ditemukan.');$debtStmt=$pdo->prepare("INSERT INTO debts(debt_code,type,related_type,related_id,related_name,category,issue_date,amount,principal_amount,paid_amount,payment_method,source_module,source_table,source_id,reference_code,status,description,created_by,created_at,updated_at) VALUES(:code,'debt','personal',:party,:name,'Kekurangan Kas Kantor',:date,:amount,:principal,0,:method,'other','transactions',:source_id,:reference,'unpaid',:description,:user,NOW(),NOW())");$debtStmt->execute([':code'=>finance_generate_debt_code($pdo,'debt'),':party'=>$shortagePartyId,':name'=>$partyName,':date'=>$transactionDate,':amount'=>$shortfall,':principal'=>$shortfall,':method'=>$paymentMethod,':source_id'=>$transactionId,':reference'=>$referenceCode?:'TRX-'.$transactionId,':description'=>'Kekurangan saldo untuk '.$transactionName,':user'=>$_SESSION['user_id']??null]);}
         }
@@ -88,12 +96,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         if ($accountId) {
             f_recalculate_account($pdo, $accountId);
         }
+        log_activity($pdo, 'Finance', 'CREATE', finance_posting_mode_label($postingMode) . ($historicalReason ? ' — ' . $historicalReason : ''), $transactionId, 'transactions');
 
         $pdo->commit();
 
         redirect('pages/finance/transactions.php?message=Transaksi berhasil ditambahkan');
-    } catch (Exception $e) {
+    } catch (Throwable $e) {
         if ($pdo->inTransaction()) $pdo->rollBack();
+        upload_delete_file($proofFile);
         $error = $e->getMessage();
     }
 }
@@ -131,6 +141,10 @@ require_once __DIR__ . '/../../includes/sidebar.php';
                 <label class="form-label fw-semibold">Nominal</label>
                 <input type="text" name="amount" id="transactionAmount" class="form-control money-input" required placeholder="Contoh: 1.500.000">
             </div>
+            <?php if (finance_user_can_use_non_posting()): ?>
+            <div class="col-md-12"><label class="form-label fw-semibold">Dampak Saldo</label><select name="posting_mode" id="postingMode" class="form-select"><option value="posted">Transaksi berjalan — memengaruhi saldo</option><option value="historical">Catatan historis — tidak memengaruhi saldo/dana/hutang</option></select><div class="form-text">Gunakan historis hanya jika transaksi sudah terkandung dalam saldo riil perusahaan.</div></div>
+            <div class="col-md-12 d-none" id="historicalReasonField"><label class="form-label fw-semibold">Alasan / Referensi Historis</label><textarea name="historical_reason" class="form-control" rows="2"></textarea></div>
+            <?php endif; ?>
 
             <div class="col-md-6 expense-funding"><label class="form-label fw-semibold">Sumber Pengeluaran</label><select name="funding_source" id="fundingSource" class="form-select"><option value="company" <?=($_POST['funding_source']??'company')==='company'?'selected':'';?>>Kas/Bank Perusahaan</option><option value="operational_fund" <?=($_POST['funding_source']??'')==='operational_fund'?'selected':'';?>>Dana Operasional PIC</option><option value="party_advance" <?=($_POST['funding_source']??'')==='party_advance'?'selected':'';?>>Talangan Pihak/PIC</option></select></div>
             <div class="col-md-6" id="companyAccountField">
@@ -201,20 +215,22 @@ document.querySelectorAll('.money-input').forEach(function(input) {
     });
 });
 document.getElementById('quickCategoryModal')?.addEventListener('show.bs.modal',()=>{document.getElementById('quickTransactionType').value=document.getElementById('transactionType').value;});
+function syncPostingMode(){const field=document.getElementById('postingMode');if(!field)return;const historical=field.value==='historical';document.getElementById('historicalReasonField').classList.toggle('d-none',!historical);document.querySelector('[name="historical_reason"]').required=historical;syncFunding();}
 function syncFunding(){
     const expense=document.getElementById('transactionType').value==='expense';
     const value=document.getElementById('fundingSource').value;
+    const historical=document.getElementById('postingMode')?.value==='historical';
     const useCompany=!expense||value==='company';
     document.querySelectorAll('.expense-funding').forEach(e=>e.classList.toggle('d-none',!expense));
     document.querySelectorAll('.funding-extra').forEach(e=>{
         const active=expense&&e.dataset.funding===value;
         e.classList.toggle('d-none',!active);
-        e.querySelectorAll('select').forEach(input=>{input.disabled=!active;input.required=active&&e.dataset.funding!=='company';});
+        e.querySelectorAll('select').forEach(input=>{input.disabled=!active;input.required=active&&!historical&&e.dataset.funding!=='company';});
     });
     const accountField=document.getElementById('companyAccountField');
     const accountSelect=document.getElementById('companyAccountSelect');
     accountField?.classList.toggle('d-none',!useCompany);
-    if(accountSelect){accountSelect.disabled=!useCompany;accountSelect.required=useCompany;}
+    if(accountSelect){accountSelect.disabled=!useCompany;accountSelect.required=useCompany&&!historical;}
     syncCompanyShortage();
 }
 function syncCompanyShortage(){
@@ -223,7 +239,8 @@ function syncCompanyShortage(){
     const account=document.getElementById('companyAccountSelect');
     const amount=parseFloat((document.getElementById('transactionAmount').value||'').replace(/[^0-9]/g,''))||0;
     const balance=parseFloat(account?.selectedOptions?.[0]?.dataset.balance||'0')||0;
-    const insufficient=expense&&company&&account?.value&&amount>balance;
+    const historical=document.getElementById('postingMode')?.value==='historical';
+    const insufficient=!historical&&expense&&company&&account?.value&&amount>balance;
     const field=document.getElementById('companyShortageField');
     const select=document.getElementById('companyShortageSelect');
     field?.classList.toggle('d-none',!insufficient);
@@ -232,6 +249,7 @@ function syncCompanyShortage(){
 document.getElementById('transactionType')?.addEventListener('change',syncFunding);document.getElementById('fundingSource')?.addEventListener('change',syncFunding);syncFunding();
 document.getElementById('companyAccountSelect')?.addEventListener('change',syncCompanyShortage);
 document.getElementById('transactionAmount')?.addEventListener('input',syncCompanyShortage);
+if(document.getElementById('postingMode')){document.getElementById('postingMode').addEventListener('change',syncPostingMode);syncPostingMode();}
 </script>
 
 <?php require_once __DIR__ . '/../../includes/footer.php'; ?>

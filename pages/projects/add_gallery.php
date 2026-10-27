@@ -20,43 +20,9 @@ $error = '';
 
 function uploadProjectGallery($files, $project_id, $image_type, $caption, $pdo)
 {
-    if (!isset($files) || empty($files['name'][0])) {
-        throw new Exception('Minimal upload 1 gambar.');
-    }
-
-    $uploadDir = __DIR__ . '/../../uploads/project_galleries/';
-
-    if (!is_dir($uploadDir)) {
-        mkdir($uploadDir, 0777, true);
-    }
-
-    $allowedExt = ['jpg', 'jpeg', 'png', 'webp'];
-    $maxSize = 5 * 1024 * 1024;
-
-    foreach ($files['name'] as $key => $name) {
-        if ($files['error'][$key] !== UPLOAD_ERR_OK) {
-            throw new Exception('Ada gambar yang gagal diupload.');
-        }
-
-        if ($files['size'][$key] > $maxSize) {
-            throw new Exception('Ukuran setiap gambar maksimal 5MB.');
-        }
-
-        $ext = strtolower(pathinfo($name, PATHINFO_EXTENSION));
-
-        if (!in_array($ext, $allowedExt)) {
-            throw new Exception('Format gambar harus JPG, JPEG, PNG, atau WEBP.');
-        }
-
-        $fileName = 'project_' . $project_id . '_' . time() . '_' . rand(1000, 9999) . '.' . $ext;
-        $targetPath = $uploadDir . $fileName;
-
-        if (!move_uploaded_file($files['tmp_name'][$key], $targetPath)) {
-            throw new Exception('Gagal menyimpan gambar.');
-        }
-
-        $imagePath = 'uploads/project_galleries/' . $fileName;
-
+    $paths = upload_store_multiple($files, 'project_galleries', 'project_' . (int)$project_id, upload_image_mimes(), 5242880, 10, true);
+    try {
+        $pdo->beginTransaction();
         $stmt = $pdo->prepare("
             INSERT INTO project_galleries
             (project_id, image_type, image_path, caption)
@@ -64,12 +30,19 @@ function uploadProjectGallery($files, $project_id, $image_type, $caption, $pdo)
             (:project_id, :image_type, :image_path, :caption)
         ");
 
-        $stmt->execute([
-            ':project_id' => $project_id,
-            ':image_type' => $image_type,
-            ':image_path' => $imagePath,
-            ':caption' => $caption ?: null
-        ]);
+        foreach ($paths as $path) {
+            $stmt->execute([
+                ':project_id' => $project_id,
+                ':image_type' => $image_type,
+                ':image_path' => $path,
+                ':caption' => $caption ?: null
+            ]);
+        }
+        $pdo->commit();
+    } catch (Throwable $e) {
+        if ($pdo->inTransaction()) $pdo->rollBack();
+        foreach ($paths as $path) upload_delete_file($path);
+        throw $e;
     }
 }
 
@@ -81,7 +54,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         uploadProjectGallery($_FILES['gallery_images'] ?? null, $project_id, $image_type, $caption, $pdo);
 
         redirect('pages/projects/detail.php?id=' . $project_id . '&tab=gallery');
-    } catch (Exception $e) {
+    } catch (Throwable $e) {
         $error = $e->getMessage();
     }
 }

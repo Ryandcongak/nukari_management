@@ -1,6 +1,7 @@
 <?php
 require_once __DIR__ . '/../../includes/auth.php';
 require_once __DIR__ . '/product_helpers.php';
+require_once __DIR__ . '/../../includes/finance_helper.php';
 
 $pageTitle = 'Kasir / POS Produk - Nukari';
 
@@ -80,6 +81,7 @@ function cashier_resolve_client(PDO $pdo,int $selectedId,string $name,string $ph
 }
 
 $clients=$pdo->query("SELECT id,client_name,phone,email FROM clients WHERE status='active' ORDER BY client_name")->fetchAll(PDO::FETCH_ASSOC);
+$financeAccounts=$pdo->query("SELECT id,account_name,current_balance FROM finance_accounts WHERE status='active' ORDER BY is_default DESC,account_name")->fetchAll(PDO::FETCH_ASSOC);
 
 $errors = [];
 $success = '';
@@ -99,11 +101,16 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $clientId = (int)($_POST['client_id'] ?? 0);
         $channel = $_POST['channel'] ?? 'cashier';
         $paymentMethod = $_POST['payment_method'] ?? 'cash';
+        $accountId = (int)($_POST['account_id'] ?? 0);
         $discountAmount = max(0, cashier_parse_number($_POST['discount_amount'] ?? 0));
         $notes = trim($_POST['notes'] ?? '');
 
         if (!$errors) {
             try {
+                $postingMode = finance_validate_posting_mode($_POST['posting_mode'] ?? 'posted', $_POST['historical_reason'] ?? null);
+                $historicalReason = $postingMode === 'historical' ? trim((string)($_POST['historical_reason'] ?? '')) : null;
+                finance_validate_posting_date($pdo, date('Y-m-d'), $postingMode);
+                if ($postingMode === 'posted' && $accountId <= 0) throw new Exception('Pilih akun kas/bank penerima penjualan.');
                 $pdo->beginTransaction();
                 [$clientId,$customerName,$customerPhone,$customerEmail]=cashier_resolve_client($pdo,$clientId,$customerName,$customerPhone,$customerEmail,!empty($_POST['save_customer']),false);
 
@@ -156,17 +163,24 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $trxMethod = cashier_payment_method_for_transactions($paymentMethod);
 
                 $stmt = $pdo->prepare("INSERT INTO transactions
-                    (transaction_code, transaction_date, type, category_id, amount, description, payment_method, created_by)
-                    VALUES (?, CURDATE(), 'income', ?, ?, ?, ?, ?)");
+                    (transaction_code, transaction_date, type, category_id, account_id, amount, posting_mode, historical_reason, posted_at, posted_by, description, payment_method, created_by)
+                    VALUES (?, CURDATE(), 'income', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
                 $stmt->execute([
                     $transactionCode,
                     $categoryId,
+                    $accountId ?: null,
                     $totalAmount,
+                    $postingMode,
+                    $historicalReason,
+                    $postingMode === 'posted' ? date('Y-m-d H:i:s') : null,
+                    $postingMode === 'posted' ? cashier_user_id() : null,
                     'Penjualan kasir produk - ' . $receiptCode,
                     $trxMethod,
                     cashier_user_id()
                 ]);
                 $transactionId = (int)$pdo->lastInsertId();
+                if ($accountId) finance_recalculate_account_balance($pdo, $accountId);
+                log_activity($pdo, 'POS Sale', 'CREATE', finance_posting_mode_label($postingMode) . ($historicalReason ? ' — ' . $historicalReason : ''), $transactionId, 'transactions');
 
                 $stmt = $pdo->prepare("INSERT INTO product_cashier_sales
                     (receipt_code, sale_date, client_id, customer_name, customer_phone, customer_email, channel, subtotal, discount_amount, contribution_amount, total_amount, payment_method, payment_status, transaction_id, notes, created_by)
@@ -275,6 +289,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $offeredPrice = max(0, cashier_parse_number($_POST['co_offered_price'] ?? 0));
         $paymentMode = $_POST['co_payment_mode'] ?? 'dp';
         $paymentMethod = $_POST['co_payment_method'] ?? 'cash';
+        $accountId = (int)($_POST['co_account_id'] ?? 0);
         $dpAmount = max(0, cashier_parse_number($_POST['co_down_payment'] ?? 0));
         $notes = trim($_POST['co_notes'] ?? '');
 
@@ -283,7 +298,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         if ($offeredPrice <= 0) $errors[] = 'Harga penawaran wajib lebih dari 0.';
 
         if (!$errors) {
-            try {
+        try {
+            $postingMode = finance_validate_posting_mode($_POST['co_posting_mode'] ?? 'posted', $_POST['co_historical_reason'] ?? null);
+            $historicalReason = $postingMode === 'historical' ? trim((string)($_POST['co_historical_reason'] ?? '')) : null;
+            finance_validate_posting_date($pdo, date('Y-m-d'), $postingMode);
                 $pdo->beginTransaction();
                 [$clientId,$customerName,$customerPhone,$customerEmail]=cashier_resolve_client($pdo,$clientId,$customerName,$customerPhone,$customerEmail,true,true);
 
@@ -309,21 +327,29 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $transactionId = null;
 
                 if ($paidAmount > 0) {
+                    if ($postingMode === 'posted' && $accountId <= 0) throw new Exception('Pilih akun kas/bank penerima pembayaran custom order.');
                     $categoryId = cashier_category_id($pdo, 'DP Custom Order');
                     $transactionCode = 'TRX-' . date('YmdHis') . '-' . random_int(10, 99);
                     $trxMethod = cashier_payment_method_for_transactions($paymentMethod);
                     $stmt = $pdo->prepare("INSERT INTO transactions
-                        (transaction_code, transaction_date, type, category_id, amount, description, payment_method, created_by)
-                        VALUES (?, CURDATE(), 'income', ?, ?, ?, ?, ?)");
+                        (transaction_code, transaction_date, type, category_id, account_id, amount, posting_mode, historical_reason, posted_at, posted_by, description, payment_method, created_by)
+                        VALUES (?, CURDATE(), 'income', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
                     $stmt->execute([
                         $transactionCode,
                         $categoryId,
+                        $accountId ?: null,
                         $paidAmount,
+                        $postingMode,
+                        $historicalReason,
+                        $postingMode === 'posted' ? date('Y-m-d H:i:s') : null,
+                        $postingMode === 'posted' ? cashier_user_id() : null,
                         'Pembayaran custom order - ' . $orderCode,
                         $trxMethod,
                         cashier_user_id()
                     ]);
                     $transactionId = (int)$pdo->lastInsertId();
+                    if ($accountId) finance_recalculate_account_balance($pdo, $accountId);
+                    log_activity($pdo, 'Custom Order Payment', 'CREATE', finance_posting_mode_label($postingMode) . ($historicalReason ? ' — ' . $historicalReason : ''), $transactionId, 'transactions');
                 }
 
                 $stmt = $pdo->prepare("INSERT INTO product_custom_orders
@@ -578,6 +604,8 @@ require_once __DIR__ . '/_style.php';
                                     <option value="other">Lainnya</option>
                                 </select>
                             </div>
+                            <div class="col-md-6"><label class="form-label fw-bold">Akun Penerima</label><select class="pos-input" name="account_id"><option value="">Pilih kas/bank</option><?php foreach($financeAccounts as $account): ?><option value="<?= (int)$account['id']; ?>"><?= cashier_safe($account['account_name']); ?> · <?= cashier_money($account['current_balance']); ?></option><?php endforeach; ?></select></div>
+                            <?php if (finance_user_can_use_non_posting()): ?><div class="col-md-12"><label class="form-label fw-bold">Dampak Saldo</label><select class="pos-input posting-mode" name="posting_mode"><option value="posted">Penjualan berjalan — memengaruhi keuangan</option><option value="historical">Penjualan historis — tidak memengaruhi saldo</option></select></div><div class="col-md-12 d-none historical-reason"><label class="form-label fw-bold">Alasan Historis</label><textarea class="pos-input" name="historical_reason" rows="2"></textarea></div><?php endif; ?>
                             <div class="col-md-12">
                                 <label class="form-label fw-bold">Diskon Transaksi</label>
                                 <input class="pos-input money-format" name="discount_amount" id="discountAmount" value="0">
@@ -631,6 +659,8 @@ require_once __DIR__ . '/_style.php';
                                 </select>
                             </div>
                             <div class="col-md-6"><label class="form-label fw-bold">Metode Bayar</label><select class="pos-input" name="co_payment_method"><option value="cash">Cash</option><option value="qris">QRIS</option><option value="bank_transfer">Bank Transfer</option><option value="other">Lainnya</option></select></div>
+                            <div class="col-md-6"><label class="form-label fw-bold">Akun Penerima</label><select class="pos-input" name="co_account_id"><option value="">Pilih kas/bank jika ada pembayaran</option><?php foreach($financeAccounts as $account): ?><option value="<?= (int)$account['id']; ?>"><?= cashier_safe($account['account_name']); ?> · <?= cashier_money($account['current_balance']); ?></option><?php endforeach; ?></select></div>
+                            <?php if (finance_user_can_use_non_posting()): ?><div class="col-md-12"><label class="form-label fw-bold">Dampak Saldo Pembayaran</label><select class="pos-input posting-mode" name="co_posting_mode"><option value="posted">Pembayaran berjalan — memengaruhi keuangan</option><option value="historical">Pembayaran historis — tidak memengaruhi saldo</option></select></div><div class="col-md-12 d-none historical-reason"><label class="form-label fw-bold">Alasan Historis</label><textarea class="pos-input" name="co_historical_reason" rows="2"></textarea></div><?php endif; ?>
                             <div class="col-md-12" id="dpBox"><label class="form-label fw-bold">Nominal DP</label><input class="pos-input money-format" id="coDp" name="co_down_payment" value="0"></div>
                             <div class="col-md-12"><label class="form-label fw-bold">Deskripsi Pesanan</label><textarea class="pos-input" name="co_description" rows="3"></textarea></div>
                             <div class="col-md-12"><label class="form-label fw-bold">Catatan Slip</label><textarea class="pos-input" name="co_notes" rows="2"></textarea></div>
@@ -1158,6 +1188,7 @@ function updateCustomSummary(){
     document.getElementById('coStatus').textContent = status;
 }
 document.getElementById('customForm').addEventListener('input', updateCustomSummary);
+document.querySelectorAll('.posting-mode').forEach(function(select){const sync=function(){const form=select.closest('form');const historical=select.value==='historical';const box=form?.querySelector('.historical-reason');box?.classList.toggle('d-none',!historical);const reason=box?.querySelector('textarea');if(reason)reason.required=historical;};select.addEventListener('change',sync);sync();});
 document.querySelectorAll('.js-client-select').forEach(select=>select.addEventListener('change',()=>{const option=select.selectedOptions[0],prefix=select.dataset.prefix;const map=prefix==='custom'?['customCustomerName','customCustomerPhone','customCustomerEmail']:['saleCustomerName','saleCustomerPhone','saleCustomerEmail'];if(!option?.value)return;document.getElementById(map[0]).value=option.dataset.name||'';document.getElementById(map[1]).value=option.dataset.phone||'';document.getElementById(map[2]).value=option.dataset.email||'';}));
 loadQueues(); restoreQueueForm(); renderProductList(); updateCart(); updateCustomSummary();
 </script>

@@ -70,6 +70,15 @@ require_once __DIR__ . '/../../includes/sidebar.php';
                     <i class="bi bi-box-arrow-up-right me-1"></i> <?= htmlspecialchars($sourceLink['label']); ?>
                 </a>
             <?php endif; ?>
+            <?php if (in_array((string)($debt['source_module'] ?? 'manual'), ['', 'manual'], true)): ?>
+                <a href="<?= base_url('pages/debts/edit.php?id=' . $debt['id']); ?>" class="btn btn-outline-primary"><i class="bi bi-pencil me-1"></i> Edit</a>
+                <?php if (!$payments && (float)($debt['paid_amount'] ?? 0) <= 0): ?>
+                    <form method="POST" action="<?= base_url('pages/debts/delete.php?id=' . $debt['id']); ?>" class="d-inline" onsubmit="return confirm('Hapus data hutang/piutang ini beserta transaksi penerimaan terkait?');">
+                        <?= csrf_field(); ?>
+                        <button class="btn btn-outline-danger"><i class="bi bi-trash me-1"></i> Hapus</button>
+                    </form>
+                <?php endif; ?>
+            <?php endif; ?>
             <?php if (debt_can_be_paid($debt)): ?>
                 <a href="<?= base_url('pages/debts/pay.php?id=' . $debt['id']); ?>" class="btn btn-nukari">
                     <i class="bi bi-cash me-1"></i> Bayar
@@ -123,6 +132,7 @@ require_once __DIR__ . '/../../includes/sidebar.php';
                 <h5 class="fw-bold mb-3">Informasi Utama</h5>
                 <table class="table table-borderless align-middle">
                     <tr><td class="text-muted">Jenis</td><td><?= debt_type_badge_html($debt['type']); ?></td></tr>
+                    <tr><td class="text-muted">Pengaruh Saldo</td><td><?= htmlspecialchars(finance_posting_mode_label($debt['posting_mode'] ?? 'posted')); ?><?php if (!empty($debt['historical_reason'])): ?><br><small class="text-muted"><?= htmlspecialchars($debt['historical_reason']); ?></small><?php endif; ?></td></tr>
                     <tr><td class="text-muted">Sumber</td><td><?= debt_source_badge($debt['source_module']); ?></td></tr>
                     <tr><td class="text-muted">Source Detail</td><td><?= htmlspecialchars($debt['source_table'] ?: '-'); ?> <?= $debt['source_id'] ? '#' . (int)$debt['source_id'] : ''; ?></td></tr>
                     <tr><td class="text-muted">Kode Referensi</td><td><?= htmlspecialchars($debt['reference_code'] ?: '-'); ?></td></tr>
@@ -169,6 +179,7 @@ require_once __DIR__ . '/../../includes/sidebar.php';
                                 <th>Transaksi</th>
                                 <th>Bukti</th>
                                 <th>Catatan</th>
+                                <?php if (in_array((string)($debt['source_module'] ?? 'manual'), ['', 'manual'], true)): ?><th>Aksi</th><?php endif; ?>
                             </tr>
                         </thead>
                         <tbody>
@@ -187,19 +198,23 @@ require_once __DIR__ . '/../../includes/sidebar.php';
                                         <?php endif; ?>
                                     </td>
                                     <td>
+                                        <?php if (($p['posting_mode'] ?? 'posted') === 'historical'): ?><span class="badge rounded-pill bg-secondary">Historis · tanpa saldo</span><?php else: ?><span class="badge rounded-pill bg-success">Terposting</span><?php endif; ?><br>
                                         <?php if (!empty($p['transaction_id'])): ?>
-                                            <span class="badge rounded-pill bg-success">Tercatat</span>
                                             <div class="small text-muted"><?= htmlspecialchars($p['transaction_code'] ?: ('#' . $p['transaction_id'])); ?></div>
                                         <?php else: ?>
                                             <span class="badge rounded-pill bg-warning text-dark">Belum Ada</span>
                                         <?php endif; ?>
+                                        <?php if (!empty($p['historical_reason'])): ?><div class="small text-muted"><?= htmlspecialchars($p['historical_reason']); ?></div><?php endif; ?>
                                     </td>
                                     <td><?= !empty($p['proof_file']) ? '<a target="_blank" href="' . base_url($p['proof_file']) . '">Lihat</a>' : '-'; ?></td>
                                     <td><?= htmlspecialchars($p['notes'] ?: '-'); ?></td>
+                                    <?php if (in_array((string)($debt['source_module'] ?? 'manual'), ['', 'manual'], true)): ?>
+                                        <td><form method="POST" action="<?= base_url('pages/debts/payment_delete.php?id=' . (int)$p['id']); ?>" onsubmit="return confirm('Hapus pembayaran ini dan batalkan dampaknya pada saldo?');"><?= csrf_field(); ?><button class="btn btn-sm btn-outline-danger" title="Hapus pembayaran"><i class="bi bi-trash"></i></button></form></td>
+                                    <?php endif; ?>
                                 </tr>
                             <?php endforeach; ?>
                         <?php else: ?>
-                            <tr><td colspan="7" class="text-center text-muted py-4">Belum ada pembayaran.</td></tr>
+                            <tr><td colspan="<?= in_array((string)($debt['source_module'] ?? 'manual'), ['', 'manual'], true) ? 8 : 7; ?>" class="text-center text-muted py-4">Belum ada pembayaran.</td></tr>
                         <?php endif; ?>
                         </tbody>
                     </table>

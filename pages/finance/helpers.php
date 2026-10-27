@@ -24,31 +24,14 @@ if (!function_exists('f_money_to_number')) {
 if (!function_exists('f_upload_file')) {
     function f_upload_file($field, $oldFile = null)
     {
-        if (empty($_FILES[$field]['name']) || $_FILES[$field]['error'] !== UPLOAD_ERR_OK) {
-            return $oldFile;
-        }
+        $uploaded = upload_store_file(
+            $_FILES[$field] ?? [],
+            'finance',
+            'finance',
+            upload_document_mimes()
+        );
 
-        $allowed = ['jpg', 'jpeg', 'png', 'webp', 'pdf'];
-        $ext = strtolower(pathinfo($_FILES[$field]['name'], PATHINFO_EXTENSION));
-
-        if (!in_array($ext, $allowed, true)) {
-            throw new Exception('File bukti hanya boleh JPG, PNG, WEBP, atau PDF.');
-        }
-        validate_upload($_FILES[$field], ['image/jpeg','image/png','image/webp','application/pdf']);
-
-        $dir = __DIR__ . '/../../uploads/finance/';
-        if (!is_dir($dir)) {
-            mkdir($dir, 0775, true);
-        }
-
-        $filename = 'finance_' . date('YmdHis') . '_' . bin2hex(random_bytes(4)) . '.' . $ext;
-        $target = $dir . $filename;
-
-        if (!move_uploaded_file($_FILES[$field]['tmp_name'], $target)) {
-            throw new Exception('Gagal upload file bukti.');
-        }
-
-        return 'uploads/finance/' . $filename;
+        return $uploaded ?? $oldFile;
     }
 }
 
@@ -103,6 +86,7 @@ if (!function_exists('f_recalculate_account')) {
                 COALESCE(SUM(CASE WHEN type = 'expense' THEN amount ELSE 0 END), 0) AS expense_total
             FROM transactions
             WHERE account_id = :account_id
+              AND posting_mode = 'posted'
         ");
         $stmt->execute([':account_id' => $accountId]);
         $row = $stmt->fetch(PDO::FETCH_ASSOC);

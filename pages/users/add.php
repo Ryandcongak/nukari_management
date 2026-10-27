@@ -1,9 +1,8 @@
 <?php
 require_once __DIR__ . '/../../includes/auth.php';
+require_once __DIR__ . '/../../includes/activity_log.php';
 
-if (!has_role('super_admin', 'admin')) {
-    redirect('pages/dashboard.php');
-}
+require_permission('users.manage');
 
 $pageTitle = 'Tambah User - Nukari';
 $error = '';
@@ -13,12 +12,16 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $username = clean_input($_POST['username'] ?? '');
     $email = clean_input($_POST['email'] ?? '');
     $phone = clean_input($_POST['phone'] ?? '');
-    $role = clean_input($_POST['role'] ?? 'staff');
+    $role = clean_input($_POST['role'] ?? 'admin');
     $status = clean_input($_POST['status'] ?? 'active');
     $password = $_POST['password'] ?? '';
 
     if ($full_name === '' || $username === '' || $password === '') {
         $error = 'Nama lengkap, username, dan password wajib diisi.';
+    } elseif (!is_valid_app_role($role)) {
+        $error = 'Role pengguna tidak valid.';
+    } elseif (!in_array($status, ['active', 'pending', 'inactive'], true)) {
+        $error = 'Status pengguna tidak valid.';
     } else {
         $check = $pdo->prepare("SELECT id FROM users WHERE username = :username OR email = :email LIMIT 1");
         $check->execute([
@@ -45,6 +48,16 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 ':role' => $role,
                 ':status' => $status
             ]);
+
+            $newUserId = (int)$pdo->lastInsertId();
+            log_activity(
+                $pdo,
+                'User Management',
+                'CREATE',
+                'Membuat akun ' . $username . ' dengan role ' . app_role_label($role) . ' dan status ' . $status . '.',
+                $newUserId,
+                'users'
+            );
 
             redirect('pages/users/index.php');
         }
@@ -102,20 +115,21 @@ require_once __DIR__ . '/../../includes/sidebar.php';
             <div class="col-md-3">
                 <label class="form-label fw-semibold">Role</label>
                 <select name="role" class="form-select">
-                    <option value="admin">Admin</option>
-                    <option value="manager">Manager</option>
-                    <option value="finance">Finance</option>
-                    <option value="staff">Staff</option>
-                    <option value="tukang">Tukang</option>
+                    <?php foreach (app_roles() as $roleValue => $roleLabel): ?>
+                        <option value="<?= htmlspecialchars($roleValue); ?>" <?= ($_POST['role'] ?? 'admin') === $roleValue ? 'selected' : ''; ?>>
+                            <?= htmlspecialchars($roleLabel); ?>
+                        </option>
+                    <?php endforeach; ?>
                 </select>
+                <div class="form-text">Direktur dan Komisaris hanya dapat melihat laporan.</div>
             </div>
 
             <div class="col-md-3">
                 <label class="form-label fw-semibold">Status</label>
                 <select name="status" class="form-select">
-                    <option value="active">Active</option>
-                    <option value="pending">Pending</option>
-                    <option value="inactive">Inactive</option>
+                    <?php foreach (['active' => 'Active', 'pending' => 'Pending', 'inactive' => 'Inactive'] as $statusValue => $statusLabel): ?>
+                        <option value="<?= $statusValue; ?>" <?= ($_POST['status'] ?? 'active') === $statusValue ? 'selected' : ''; ?>><?= $statusLabel; ?></option>
+                    <?php endforeach; ?>
                 </select>
             </div>
 

@@ -12,23 +12,28 @@ function employee_funding_options(PDO $pdo): array
     ];
 }
 
-function employee_funding_disburse(PDO $pdo,string $sourceTable,int $sourceId,float $amount,string $date,string $fundingSource,?int $accountId,?int $fundId,?int $partyId,string $paymentMethod,string $description,?int $userId): array
+function employee_funding_disburse(PDO $pdo,string $sourceTable,int $sourceId,float $amount,string $date,string $fundingSource,?int $accountId,?int $fundId,?int $partyId,string $paymentMethod,string $description,?int $userId,string $postingMode='posted',?string $historicalReason=null): array
 {
     if($amount<=0)throw new Exception('Nominal pencairan harus lebih dari nol.');
     if(!in_array($fundingSource,['company','operational_fund','party_advance'],true))throw new Exception('Sumber dana tidak valid.');
+    $postingMode=finance_validate_posting_mode($postingMode,$historicalReason);
+    $historicalReason=$postingMode==='historical'?trim((string)$historicalReason):null;
     $transactionId=null;$debtId=null;
     if($fundingSource==='company'){
-        if(!$accountId)throw new Exception('Pilih akun kas/bank perusahaan.');
-        $transactionId=finance_upsert_transaction($pdo,'payroll',$sourceTable,$sourceId,'expense',null,$amount,$description,'Pencairan Piutang Karyawan',$date,$paymentMethod,strtoupper($sourceTable).'-'.$sourceId,$userId,$accountId);
+        if($postingMode==='posted'&&!$accountId)throw new Exception('Pilih akun kas/bank perusahaan.');
+        $transactionId=finance_upsert_transaction($pdo,'payroll',$sourceTable,$sourceId,'expense',null,$amount,$description,'Pencairan Piutang Karyawan',$date,$paymentMethod,strtoupper($sourceTable).'-'.$sourceId,$userId,$accountId,null,$postingMode,$historicalReason);
     }elseif($fundingSource==='operational_fund'){
-        if(!$fundId)throw new Exception('Pilih Dana Operasional PIC.');
-        $fund=opfund_get($pdo,$fundId);if(!$fund||($fund['status']??'')!=='open')throw new Exception('Dana Operasional PIC tidak ditemukan atau tidak aktif.');
-        opfund_add_movement($pdo,$fundId,'expense',$amount,$date,null,$description,'payroll',$sourceTable,$sourceId,null,$paymentMethod,$userId);
+        if($postingMode==='posted'&&!$fundId)throw new Exception('Pilih Dana Operasional PIC.');
+        if($fundId){$fund=opfund_get($pdo,$fundId);if(!$fund||($fund['status']??'')!=='open')throw new Exception('Dana Operasional PIC tidak ditemukan atau tidak aktif.');
+            opfund_add_movement($pdo,$fundId,'expense',$amount,$date,null,$description,'payroll',$sourceTable,$sourceId,null,$paymentMethod,$userId,$postingMode,$historicalReason);
+        }
     }else{
-        if(!$partyId)throw new Exception('Pilih Pihak/PIC yang memberikan talangan.');
-        $s=$pdo->prepare("SELECT display_name FROM company_parties WHERE id=:id AND status='active'");$s->execute([':id'=>$partyId]);$name=$s->fetchColumn();if(!$name)throw new Exception('Pihak/PIC tidak ditemukan.');
-        $s=$pdo->prepare("INSERT INTO debts(debt_code,type,related_type,related_id,related_name,category,issue_date,amount,principal_amount,paid_amount,payment_method,source_module,source_table,source_id,reference_code,status,description,created_by,created_at,updated_at) VALUES(:code,'debt','personal',:party,:name,'Talangan Pencairan Karyawan',:date,:amount,:principal_amount,0,:method,'payroll',:source_table,:source_id,:reference,'unpaid',:description,:user,NOW(),NOW())");
-        $s->execute([':code'=>finance_generate_debt_code($pdo,'debt'),':party'=>$partyId,':name'=>$name,':date'=>$date,':amount'=>$amount,':principal_amount'=>$amount,':method'=>$paymentMethod,':source_table'=>$sourceTable,':source_id'=>$sourceId,':reference'=>strtoupper($sourceTable).'-'.$sourceId,':description'=>$description,':user'=>$userId]);$debtId=(int)$pdo->lastInsertId();
+        if($postingMode==='posted'){
+            if(!$partyId)throw new Exception('Pilih Pihak/PIC yang memberikan talangan.');
+            $s=$pdo->prepare("SELECT display_name FROM company_parties WHERE id=:id AND status='active'");$s->execute([':id'=>$partyId]);$name=$s->fetchColumn();if(!$name)throw new Exception('Pihak/PIC tidak ditemukan.');
+            $s=$pdo->prepare("INSERT INTO debts(debt_code,type,related_type,related_id,related_name,category,issue_date,amount,principal_amount,paid_amount,payment_method,source_module,source_table,source_id,reference_code,status,posting_mode,historical_reason,description,created_by,created_at,updated_at) VALUES(:code,'debt','personal',:party,:name,'Talangan Pencairan Karyawan',:date,:amount,:principal_amount,0,:method,'payroll',:source_table,:source_id,:reference,'unpaid','posted',NULL,:description,:user,NOW(),NOW())");
+            $s->execute([':code'=>finance_generate_debt_code($pdo,'debt'),':party'=>$partyId,':name'=>$name,':date'=>$date,':amount'=>$amount,':principal_amount'=>$amount,':method'=>$paymentMethod,':source_table'=>$sourceTable,':source_id'=>$sourceId,':reference'=>strtoupper($sourceTable).'-'.$sourceId,':description'=>$description,':user'=>$userId]);$debtId=(int)$pdo->lastInsertId();
+        }
     }
     return ['transaction_id'=>$transactionId,'debt_id'=>$debtId];
 }
@@ -73,6 +78,7 @@ function employee_funding_cancel(PDO $pdo,string $sourceTable,int $sourceId): vo
 function employee_funding_source_label(array $row): string
 {
     if (($row['loan_origin'] ?? '') === 'opening_balance') return 'Saldo Awal · tanpa transaksi dana';
+    if (($row['posting_mode'] ?? 'posted') === 'historical') return 'Catatan Lama · tanpa perubahan saldo';
     $source=$row['funding_source']??'company';
     if($source==='operational_fund')return 'Dana PIC · '.($row['fund_holder_name']??$row['fund_person_name']??$row['fund_code']??'-');
     if($source==='party_advance')return 'Talangan PIC · '.($row['funding_party_name']??'-');
@@ -104,5 +110,21 @@ function employee_cash_advance_settle_for_payroll(PDO $pdo, array $payroll): voi
 
     if ($remainingDeduction > 0.009) {
         throw new Exception('Saldo kasbon aktif berubah setelah payroll dibuat. Silakan recalculate payroll sebelum pembayaran.');
+    }
+}
+
+function employee_cash_advance_restore_for_payroll(PDO $pdo, int $payrollId): void
+{
+    if ($payrollId <= 0) return;
+
+    $stmt = $pdo->prepare("SELECT id,amount FROM employee_cash_advances WHERE allocated_payroll_id=:payroll_id FOR UPDATE");
+    $stmt->execute([':payroll_id' => $payrollId]);
+
+    $update = $pdo->prepare("UPDATE employee_cash_advances SET remaining_amount=:remaining,status='active',allocated_payroll_id=NULL,deducted_at=NULL,updated_at=NOW() WHERE id=:id");
+    foreach ($stmt->fetchAll(PDO::FETCH_ASSOC) as $cashAdvance) {
+        $update->execute([
+            ':remaining' => max(0, (float)$cashAdvance['amount']),
+            ':id' => (int)$cashAdvance['id'],
+        ]);
     }
 }

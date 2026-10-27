@@ -9,7 +9,12 @@ if (!$id) {
 
 $stmt = $pdo->prepare("SELECT p.id,p.project_name,p.status,
     (SELECT COUNT(*) FROM project_transactions t WHERE t.project_id=p.id) transaction_count,
-    (SELECT COUNT(*) FROM project_payment_terms pt WHERE pt.project_id=p.id) term_count
+    (SELECT COUNT(*) FROM project_payment_terms pt WHERE pt.project_id=p.id) term_count,
+    (SELECT COUNT(*) FROM project_funds pf WHERE pf.project_id=p.id) fund_count,
+    (SELECT COUNT(*) FROM project_workers pw WHERE pw.project_id=p.id) worker_count,
+    (SELECT COUNT(*) FROM transactions ft WHERE ft.project_id=p.id) finance_transaction_count,
+    (SELECT COUNT(*) FROM debts d WHERE d.project_id=p.id) debt_count,
+    (SELECT COUNT(*) FROM operational_fund_movements om WHERE om.project_id=p.id) operational_movement_count
     FROM projects p WHERE p.id=:id LIMIT 1");
 $stmt->execute([':id' => $id]);
 $project = $stmt->fetch(PDO::FETCH_ASSOC);
@@ -18,9 +23,15 @@ if (!$project) {
     redirect('pages/projects/index.php');
 }
 
-$canDelete = $project['status'] === 'planning' || ((int)$project['transaction_count'] === 0 && (int)$project['term_count'] === 0);
+$canDelete = (int)$project['transaction_count'] === 0
+    && (int)$project['term_count'] === 0
+    && (int)$project['fund_count'] === 0
+    && (int)$project['worker_count'] === 0
+    && (int)$project['finance_transaction_count'] === 0
+    && (int)$project['debt_count'] === 0
+    && (int)$project['operational_movement_count'] === 0;
 if (!$canDelete) {
-    redirect('pages/projects/index.php?error=Project hanya dapat dihapus ketika masih planning atau belum memiliki transaksi. Gunakan Batalkan untuk menyimpan histori.');
+    redirect('pages/projects/index.php?error=Project tidak dapat dihapus permanen karena sudah memiliki termin, pekerja, pendanaan, atau transaksi keuangan. Gunakan Batalkan untuk menyimpan histori.');
 }
 
 $pageTitle = 'Hapus Permanen Project - Nukari';
@@ -48,20 +59,25 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $error = 'Password salah. Project tidak dihapus.';
         } else {
             try {
+                $galleryStmt = $pdo->prepare("SELECT image_path FROM project_galleries WHERE project_id=:id AND image_path IS NOT NULL");
+                $galleryStmt->execute([':id' => $id]);
+                $galleryFiles = array_values(array_filter($galleryStmt->fetchAll(PDO::FETCH_COLUMN), static fn($path) => !preg_match('/^https?:\/\//i', (string)$path)));
                 $pdo->beginTransaction();
 
                 $pdo->prepare("DELETE FROM project_transactions WHERE project_id = :id")->execute([':id' => $id]);
                 $pdo->prepare("DELETE FROM project_funds WHERE project_id = :id")->execute([':id' => $id]);
                 $pdo->prepare("DELETE FROM project_workers WHERE project_id = :id")->execute([':id' => $id]);
                 $pdo->prepare("DELETE FROM project_payment_terms WHERE project_id = :id")->execute([':id' => $id]);
+                $pdo->prepare("DELETE FROM project_galleries WHERE project_id = :id")->execute([':id' => $id]);
 
                 $pdo->prepare("DELETE FROM projects WHERE id = :id")->execute([':id' => $id]);
 
                 $pdo->commit();
+                foreach (array_unique($galleryFiles) as $file) upload_delete_file($file);
 
                 redirect('pages/projects/index.php');
-            } catch (Exception $e) {
-                $pdo->rollBack();
+            } catch (Throwable $e) {
+                if ($pdo->inTransaction()) $pdo->rollBack();
                 $error = 'Gagal menghapus project secara permanen. Kemungkinan masih ada relasi data lain.';
             }
         }

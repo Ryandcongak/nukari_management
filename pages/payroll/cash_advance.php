@@ -60,6 +60,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $amount = normalize_cash_money($_POST['amount'] ?? 0);
         $deductionMonth = $_POST['deduction_month'] ?? date('Y-m');
         $notes = trim($_POST['notes'] ?? '');
+        $postingMode = $_POST['posting_mode'] ?? 'posted';
+        $historicalReason = trim($_POST['historical_reason'] ?? '');
         $proofPath = null;
 
         if ($employeeId <= 0) {
@@ -72,6 +74,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $error = 'Tanggal kasbon tidak valid.';
         } else {
             try {
+                $postingMode=finance_validate_posting_mode($postingMode,$historicalReason);
+                $historicalReason=$postingMode==='historical'?trim($historicalReason):null;
                 if (isset($_FILES['proof_file']) && $_FILES['proof_file']['error'] === UPLOAD_ERR_OK) {
                     $allowedExt = ['jpg', 'jpeg', 'png', 'pdf'];
                     $fileName = $_FILES['proof_file']['name'];
@@ -113,7 +117,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                         deduction_month,
                         proof_file,
                         status,
-                        notes,funding_source,account_id,operational_fund_id,funding_party_id,disbursement_status,payment_method,created_by
+                        notes,funding_source,account_id,operational_fund_id,funding_party_id,disbursement_status,posting_mode,historical_reason,payment_method,created_by
                     ) VALUES (
                         :employee_id,
                         :advance_date,
@@ -122,7 +126,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                         :deduction_month,
                         :proof_file,
                         'active',
-                        :notes,:funding_source,:account_id,:operational_fund_id,:funding_party_id,'disbursed',:payment_method,:created_by
+                        :notes,:funding_source,:account_id,:operational_fund_id,:funding_party_id,'disbursed',:posting_mode,:historical_reason,:payment_method,:created_by
                     )
                 ");
 
@@ -134,10 +138,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     ':deduction_month' => $deductionMonth,
                     ':proof_file' => $proofPath,
                     ':notes' => $notes !== '' ? $notes : null,
-                    ':funding_source'=>$_POST['funding_source']??'company',':account_id'=>($_POST['account_id']??'')?:null,':operational_fund_id'=>($_POST['operational_fund_id']??'')?:null,':funding_party_id'=>($_POST['funding_party_id']??'')?:null,':payment_method'=>$_POST['payment_method']??'cash',':created_by'=>$_SESSION['user_id']??null
+                    ':funding_source'=>$_POST['funding_source']??'company',':account_id'=>($_POST['account_id']??'')?:null,':operational_fund_id'=>($_POST['operational_fund_id']??'')?:null,':funding_party_id'=>($_POST['funding_party_id']??'')?:null,':posting_mode'=>$postingMode,':historical_reason'=>$historicalReason,':payment_method'=>$_POST['payment_method']??'cash',':created_by'=>$_SESSION['user_id']??null
                 ]);
                 $cashId=(int)$pdo->lastInsertId();
-                $links=employee_funding_disburse($pdo,'employee_cash_advances',$cashId,$amount,$advanceDate,$_POST['funding_source']??'company',(int)($_POST['account_id']??0),(int)($_POST['operational_fund_id']??0),(int)($_POST['funding_party_id']??0),$_POST['payment_method']??'cash','Pencairan kasbon karyawan #'.$cashId,$_SESSION['user_id']??null);
+                $links=employee_funding_disburse($pdo,'employee_cash_advances',$cashId,$amount,$advanceDate,$_POST['funding_source']??'company',(int)($_POST['account_id']??0),(int)($_POST['operational_fund_id']??0),(int)($_POST['funding_party_id']??0),$_POST['payment_method']??'cash','Pencairan kasbon karyawan #'.$cashId,$_SESSION['user_id']??null,$postingMode,$historicalReason);
                 $pdo->prepare("UPDATE employee_cash_advances SET transaction_id=:tx,debt_id=:debt WHERE id=:id")->execute([':tx'=>$links['transaction_id'],':debt'=>$links['debt_id'],':id'=>$cashId]);
                 $pdo->commit();
 
@@ -397,6 +401,10 @@ require_once __DIR__ . '/../../includes/sidebar.php';
             <div class="col-md-3 funding-choice d-none" data-source="operational_fund"><label class="form-label">Dana Operasional PIC</label><select name="operational_fund_id" class="form-select"><option value="">Pilih dana</option><?php foreach($fundingOptions['funds'] as $f):?><option value="<?=$f['id'];?>"><?=htmlspecialchars($f['display_name']?:$f['person_name']);?> · <?=cash_money($f['current_balance']);?></option><?php endforeach;?></select></div>
             <div class="col-md-3 funding-choice d-none" data-source="party_advance"><label class="form-label">Pihak/PIC Penalang</label><select name="funding_party_id" class="form-select"><option value="">Pilih pihak</option><?php foreach($fundingOptions['parties'] as $p):?><option value="<?=$p['id'];?>"><?=htmlspecialchars($p['display_name']);?></option><?php endforeach;?></select></div>
             <div class="col-md-3"><label class="form-label">Metode</label><select name="payment_method" class="form-select"><option value="cash">Cash</option><option value="bank_transfer">Transfer</option><option value="qris">QRIS</option><option value="other">Lainnya</option></select></div>
+            <?php if (finance_user_can_use_non_posting()): ?>
+            <div class="col-md-4"><label class="form-label fw-semibold">Pengaruh ke Saldo</label><select name="posting_mode" class="form-select posting-mode"><option value="posted">Kasbon baru — kurangi saldo</option><option value="historical">Kasbon lama — tidak ubah saldo</option></select></div>
+            <div class="col-md-8 historical-reason d-none"><label class="form-label fw-semibold">Alasan Catatan Lama</label><input type="text" name="historical_reason" class="form-control" placeholder="Contoh: dicairkan sebelum saldo awal sistem"></div>
+            <?php else: ?><input type="hidden" name="posting_mode" value="posted"><?php endif; ?>
 
             <div class="col-md-12">
                 <label class="form-label fw-semibold">Catatan</label>
@@ -577,7 +585,7 @@ require_once __DIR__ . '/../../includes/sidebar.php';
     </div>
 
 </main>
-<script>document.querySelector('.funding-source')?.addEventListener('change',function(){document.querySelectorAll('.funding-choice').forEach(e=>e.classList.toggle('d-none',e.dataset.source!==this.value));});</script>
+<script>document.querySelector('.funding-source')?.addEventListener('change',function(){document.querySelectorAll('.funding-choice').forEach(e=>e.classList.toggle('d-none',e.dataset.source!==this.value));});document.querySelector('.posting-mode')?.addEventListener('change',function(){document.querySelector('.historical-reason')?.classList.toggle('d-none',this.value!=='historical');});</script>
 
 <script>
     document.addEventListener('DOMContentLoaded', function() {

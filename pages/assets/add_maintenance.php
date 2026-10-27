@@ -5,6 +5,7 @@ $id = (int)($_POST['asset_id'] ?? $_GET['asset_id'] ?? 0);
 if ($id <= 0) redirect('pages/assets/index.php');
 if ($_SERVER['REQUEST_METHOD'] !== 'POST') redirect('pages/assets/detail.php?id=' . $id);
 
+$proof = null;
 try {
     $assetStmt = $pdo->prepare("SELECT * FROM assets WHERE id=:id LIMIT 1");
     $assetStmt->execute([':id'=>$id]);
@@ -19,6 +20,8 @@ try {
     $accountId = (int)($_POST['account_id'] ?? 0) ?: null;
     $paymentMethod = $_POST['payment_method'] ?? 'cash';
     $maintenanceDate = $_POST['maintenance_date'] ?: date('Y-m-d');
+    $postingMode = finance_validate_posting_mode($_POST['posting_mode'] ?? 'posted', $_POST['historical_reason'] ?? null);
+    $historicalReason = $postingMode === 'historical' ? trim((string)($_POST['historical_reason'] ?? '')) : null;
     if ($cost > 0 && !$accountId) throw new Exception('Pilih akun kas/bank untuk pembayaran maintenance.');
     $pdo->beginTransaction();
     $stmt = $pdo->prepare("INSERT INTO asset_maintenance (asset_id, plan_id, project_id, account_id, payment_method, maintenance_date, maintenance_type, description, cost, labor_cost, parts_cost, meter_value, condition_before, condition_after, vendor_name, next_maintenance_date, proof_file, notes, created_by) VALUES (:asset_id, :plan_id, :project_id, :account_id, :payment_method, :maintenance_date, :maintenance_type, :description, :cost, :labor_cost, :parts_cost, :meter_value, :condition_before, :condition_after, :vendor_name, :next_maintenance_date, :proof_file, :notes, :created_by)");
@@ -48,11 +51,12 @@ try {
     $transactionId = null;
     $projectTransactionId = null;
     if ($cost > 0) {
-        $transactionId = asset_create_transaction($pdo, 'expense', $cost, $description, $paymentMethod, $proof, $projectId, $id, $accountId, $maintenanceDate);
+        $transactionId = asset_create_transaction($pdo, 'expense', $cost, $description, $paymentMethod, $proof, $projectId, $id, $accountId, $maintenanceDate, $postingMode, $historicalReason);
         if ($projectId) {
-            $projectTransactionId = asset_create_project_mirror($pdo, $projectId, 'expense', $cost, 'Maintenance Aset', $description, 'asset_maintenance', $maintenanceId, $paymentMethod, $accountId, $maintenanceDate);
+            $projectTransactionId = asset_create_project_mirror($pdo, $projectId, 'expense', $cost, 'Maintenance Aset', $description, 'asset_maintenance', $maintenanceId, $paymentMethod, $accountId, $maintenanceDate, $postingMode, $historicalReason);
         }
         $pdo->prepare("UPDATE asset_maintenance SET transaction_id=:transaction_id, project_transaction_id=:project_transaction_id WHERE id=:id")->execute([':transaction_id'=>$transactionId, ':project_transaction_id'=>$projectTransactionId, ':id'=>$maintenanceId]);
+        log_activity($pdo, 'Asset Maintenance', 'CREATE', finance_posting_mode_label($postingMode) . ($historicalReason ? ' — ' . $historicalReason : ''), $transactionId, 'transactions');
     }
     if (!empty($_POST['plan_id'])) {
         $pdo->prepare("UPDATE asset_maintenance_plans SET last_service_date=:last_date, next_service_date=:next_date, last_meter_value=:meter_value, updated_at=NOW() WHERE id=:id AND asset_id=:asset_id")->execute([':last_date'=>$maintenanceDate, ':next_date'=>($_POST['next_maintenance_date'] ?? '') ?: null, ':meter_value'=>($_POST['meter_value'] ?? '') !== '' ? asset_money_value($_POST['meter_value']) : null, ':id'=>(int)$_POST['plan_id'], ':asset_id'=>$id]);
@@ -68,8 +72,9 @@ try {
     }
     $pdo->commit();
     $_SESSION['success'] = 'Riwayat maintenance berhasil ditambahkan.';
-} catch (Exception $e) {
+} catch (Throwable $e) {
     if ($pdo->inTransaction()) $pdo->rollBack();
+    upload_delete_file($proof);
     $_SESSION['error'] = $e->getMessage();
 }
 redirect('pages/assets/detail.php?id=' . $id . '#maintenance');

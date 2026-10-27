@@ -4,27 +4,15 @@ require_once __DIR__ . '/product_helpers.php';
 require_once __DIR__ . '/../../includes/master_data_helper.php';
 
 $pageTitle='Tambah Produk - Nukari';
+$error = '';
 
 function product_upload_photo($field = 'photo') {
-    if (empty($_FILES[$field]['name']) || ($_FILES[$field]['error'] ?? UPLOAD_ERR_NO_FILE) === UPLOAD_ERR_NO_FILE) return null;
-    if (($_FILES[$field]['error'] ?? UPLOAD_ERR_OK) !== UPLOAD_ERR_OK) return null;
-
-    $allowed = ['image/jpeg'=>'jpg','image/png'=>'png','image/webp'=>'webp','image/gif'=>'gif'];
-    $tmp = $_FILES[$field]['tmp_name'];
-    $mime = function_exists('mime_content_type') ? mime_content_type($tmp) : ($_FILES[$field]['type'] ?? '');
-    if (!isset($allowed[$mime])) return null;
-
-    $dir = __DIR__ . '/../../uploads/products';
-    if (!is_dir($dir)) mkdir($dir, 0775, true);
-
-    $name = 'product-' . date('YmdHis') . '-' . bin2hex(random_bytes(4)) . '.' . $allowed[$mime];
-    $dest = $dir . '/' . $name;
-    if (!move_uploaded_file($tmp, $dest)) return null;
-
-    return 'uploads/products/' . $name;
+    return upload_store_file($_FILES[$field] ?? [], 'products', 'product', upload_image_mimes(true));
 }
 
 if($_SERVER['REQUEST_METHOD']==='POST'){
+    $photo = null;
+    try {
     $code = trim($_POST['product_code']??'') ?: product_code('PRD');
     $barcode = trim($_POST['barcode_code'] ?? '') ?: $code;
     $basePrice = product_parse_number($_POST['base_price']??0);
@@ -62,7 +50,11 @@ if($_SERVER['REQUEST_METHOD']==='POST'){
         ($_POST['contribution_event_date'] ?? '') ?: null,
         $_POST['status']??'active'
     ]);
-    header('Location: index.php');exit;
+        header('Location: index.php');exit;
+    } catch (Throwable $e) {
+        upload_delete_file($photo);
+        $error = $e->getMessage();
+    }
 }
 
 require_once __DIR__.'/../../includes/header.php';
@@ -91,6 +83,7 @@ require_once __DIR__.'/_style.php';
             <a href="index.php" class="btn btn-outline-secondary btn-rounded">Kembali</a>
         </div>
         <div class="form-card-body">
+            <?php if ($error): ?><div class="alert alert-danger"><?= product_safe($error); ?></div><?php endif; ?>
             <form method="post" enctype="multipart/form-data" class="row g-4">
                 <div class="col-lg-4">
                     <div class="photo-upload-box">

@@ -32,51 +32,17 @@ function asset_allowed_image_ext($filename)
 
 function asset_upload_one($file, $prefix = 'asset')
 {
-    if (empty($file['name']) || empty($file['tmp_name'])) return null;
-
-    $ext = asset_allowed_image_ext($file['name']);
-    if (!$ext) throw new Exception('Foto aset hanya boleh JPG, JPEG, PNG, atau WEBP.');
-    validate_upload($file, ['image/jpeg','image/png','image/webp']);
-
-    $uploadDir = __DIR__ . '/../../uploads/assets/';
-    if (!is_dir($uploadDir)) mkdir($uploadDir, 0775, true);
-
-    $fileName = $prefix . '_' . date('YmdHis') . '_' . bin2hex(random_bytes(4)) . '.' . $ext;
-    if (!move_uploaded_file($file['tmp_name'], $uploadDir . $fileName)) {
-        throw new Exception('Gagal mengupload foto aset.');
-    }
-
-    return 'uploads/assets/' . $fileName;
+    return upload_store_file($file, 'assets', $prefix, upload_image_mimes());
 }
 
 function asset_upload_multiple($files, $prefix = 'asset')
 {
-    $paths = [];
-    if (empty($files['name']) || !is_array($files['name'])) return $paths;
-
-    foreach ($files['name'] as $i => $name) {
-        if (empty($name)) continue;
-        $file = [
-            'name' => $files['name'][$i],
-            'type' => $files['type'][$i] ?? '',
-            'tmp_name' => $files['tmp_name'][$i] ?? '',
-            'error' => $files['error'][$i] ?? UPLOAD_ERR_NO_FILE,
-            'size' => $files['size'][$i] ?? 0,
-        ];
-        if ($file['error'] !== UPLOAD_ERR_OK) continue;
-        $paths[] = asset_upload_one($file, $prefix);
-    }
-    return $paths;
+    return upload_store_multiple($files, 'assets', $prefix, upload_image_mimes(), 5242880, 10);
 }
 
 function asset_safe_delete_file($path)
 {
-    if (!$path) return;
-    $file = realpath(__DIR__ . '/../../' . $path);
-    $root = realpath(__DIR__ . '/../../uploads/assets');
-    if ($file && $root && strpos($file, $root) === 0 && file_exists($file)) {
-        @unlink($file);
-    }
+    upload_delete_file($path);
 }
 
 
@@ -102,16 +68,21 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $record_purchase = isset($_POST['record_purchase']);
     $account_id = (int)($_POST['account_id'] ?? 0);
     $payment_method = $_POST['payment_method'] ?? 'cash';
+    $posting_mode = finance_normalize_posting_mode($_POST['posting_mode'] ?? 'posted');
+    $historical_reason = $posting_mode === 'historical' ? trim((string)($_POST['historical_reason'] ?? '')) : null;
 
     if ($asset_name === '') {
         $error = 'Nama aset wajib diisi.';
-    } elseif ($record_purchase && ($purchase_price <= 0 || $account_id <= 0)) {
+    } elseif ($record_purchase && $posting_mode === 'posted' && ($purchase_price <= 0 || $account_id <= 0)) {
         $error = 'Harga beli dan akun pembayaran wajib diisi jika pembelian dicatat ke Keuangan.';
     } else {
+        $uploadedFiles = [];
         try {
+            if ($record_purchase) $posting_mode = finance_validate_posting_mode($posting_mode, $historical_reason);
             $mainPhoto = null;
             if (!empty($_FILES['photo']['name'])) {
                 $mainPhoto = asset_upload_one($_FILES['photo'], 'asset_main');
+                if ($mainPhoto) $uploadedFiles[] = $mainPhoto;
             }
 
             if ($asset_code === '') $asset_code = 'AST-' . date('YmdHis');
@@ -146,12 +117,15 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $assetId = (int)$pdo->lastInsertId();
 
             if ($record_purchase) {
-                asset_create_transaction($pdo, 'expense', $purchase_price, 'Pembelian aset: ' . $asset_name, $payment_method, null, null, $assetId, $account_id, $purchase_date ?: date('Y-m-d'));
+                $assetTransactionId = asset_create_transaction($pdo, 'expense', $purchase_price, 'Pembelian aset: ' . $asset_name, $payment_method, null, null, $assetId, $account_id ?: null, $purchase_date ?: date('Y-m-d'), $posting_mode, $historical_reason);
+                log_activity($pdo, 'Asset Purchase', 'CREATE', finance_posting_mode_label($posting_mode) . ($historical_reason ? ' — ' . $historical_reason : ''), $assetTransactionId, 'transactions');
             }
 
             $photoPaths = [];
             if ($mainPhoto) $photoPaths[] = $mainPhoto;
-            $photoPaths = array_merge($photoPaths, asset_upload_multiple($_FILES['asset_photos'] ?? [], 'asset_gallery'));
+            $galleryPaths = asset_upload_multiple($_FILES['asset_photos'] ?? [], 'asset_gallery');
+            $uploadedFiles = array_merge($uploadedFiles, $galleryPaths);
+            $photoPaths = array_merge($photoPaths, $galleryPaths);
 
             if ($photoPaths) {
                 $insPhoto = $pdo->prepare("INSERT INTO project_asset_photos (asset_id, image_path, caption) VALUES (:asset_id, :image_path, :caption)");
@@ -168,8 +142,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
             $_SESSION['success'] = 'Aset berhasil ditambahkan.';
             redirect('pages/assets/index.php');
-        } catch (Exception $e) {
+        } catch (Throwable $e) {
             if ($pdo->inTransaction()) $pdo->rollBack();
+            foreach (array_unique($uploadedFiles) as $path) upload_delete_file($path);
             $error = $e->getMessage();
         }
     }
@@ -245,6 +220,7 @@ require_once __DIR__ . '/../../includes/sidebar.php';
             <div class="col-md-4 d-flex align-items-end"><div class="form-check mb-3"><input class="form-check-input" type="checkbox" name="record_purchase" value="1" id="recordPurchase"><label class="form-check-label fw-semibold" for="recordPurchase">Catat pembelian ke Keuangan</label></div></div>
             <div class="col-md-4"><label class="form-label fw-semibold">Akun Pembayaran</label><select name="account_id" class="form-select"><option value="">Pilih akun jika dicatat</option><?php foreach($financeAccounts as $account): ?><option value="<?= (int)$account['id']; ?>"><?= htmlspecialchars($account['account_name']); ?> · <?= rupiah($account['current_balance']); ?></option><?php endforeach; ?></select></div>
             <div class="col-md-4"><label class="form-label fw-semibold">Metode Pembayaran</label><select name="payment_method" class="form-select"><option value="cash">Cash</option><option value="bank_transfer">Bank Transfer</option><option value="qris">QRIS</option><option value="other">Lainnya</option></select></div>
+            <?php if (finance_user_can_use_non_posting()): ?><div class="col-md-12"><label class="form-label fw-semibold">Dampak Saldo Pembelian</label><select name="posting_mode" id="postingMode" class="form-select"><option value="posted">Pembelian berjalan — mengurangi saldo jika dicatat</option><option value="historical">Pembelian historis — tidak memengaruhi saldo</option></select></div><div class="col-md-12 d-none" id="historicalReasonField"><label class="form-label fw-semibold">Alasan / Referensi Historis</label><textarea name="historical_reason" class="form-control" rows="2"></textarea></div><?php endif; ?>
 
             <div class="col-md-4">
                 <label class="form-label fw-semibold">Kondisi</label>
@@ -330,6 +306,17 @@ require_once __DIR__ . '/../../includes/sidebar.php';
 
 <script>
     document.addEventListener('DOMContentLoaded', function() {
+        const postingMode = document.getElementById('postingMode');
+        const reasonField = document.getElementById('historicalReasonField');
+        const syncPostingMode = function() {
+            if (!postingMode) return;
+            const historical = postingMode.value === 'historical';
+            reasonField?.classList.toggle('d-none', !historical);
+            const reason = reasonField?.querySelector('[name="historical_reason"]');
+            if (reason) reason.required = historical;
+        };
+        postingMode?.addEventListener('change', syncPostingMode);
+        syncPostingMode();
         document.querySelectorAll('.money-input').forEach(function(input) {
             function formatRupiah(value) {
                 value = String(value || '').replace(/[^0-9]/g, '');

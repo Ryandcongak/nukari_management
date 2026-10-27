@@ -8,6 +8,197 @@
  */
 
 require_once __DIR__ . '/operational_fund_helper.php';
+require_once __DIR__ . '/activity_log.php';
+
+if (!function_exists('finance_user_can_use_non_posting')) {
+    function finance_user_can_use_non_posting(): bool
+    {
+        return isset($_SESSION['role']) && in_array($_SESSION['role'], ['super_admin', 'admin'], true);
+    }
+}
+
+if (!function_exists('finance_validate_posting_mode')) {
+    function finance_validate_posting_mode(?string $mode, ?string $reason = null, bool $allowOpeningOutstanding = false): string
+    {
+        $allowed = $allowOpeningOutstanding
+            ? ['posted', 'historical', 'opening_outstanding']
+            : ['posted', 'historical'];
+        $mode = in_array($mode, $allowed, true) ? (string)$mode : 'posted';
+
+        if ($mode !== 'posted') {
+            if (!finance_user_can_use_non_posting()) {
+                throw new Exception('Hanya admin atau super-admin yang boleh mencatat data historis/saldo awal.');
+            }
+            if (trim((string)$reason) === '') {
+                throw new Exception('Alasan pencatatan historis/saldo awal wajib diisi.');
+            }
+        }
+
+        return $mode;
+    }
+}
+
+if (!function_exists('finance_normalize_posting_mode')) {
+    function finance_normalize_posting_mode(?string $mode, bool $allowOpeningOutstanding = false): string
+    {
+        $allowed = $allowOpeningOutstanding
+            ? ['posted', 'historical', 'opening_outstanding']
+            : ['posted', 'historical'];
+        return in_array($mode, $allowed, true) ? (string)$mode : 'posted';
+    }
+}
+
+if (!function_exists('finance_posting_mode_label')) {
+    function finance_posting_mode_label(?string $mode): string
+    {
+        return match ($mode) {
+            'historical' => 'Catatan historis (tidak memengaruhi saldo)',
+            'opening_outstanding' => 'Saldo awal masih terbuka',
+            default => 'Transaksi berjalan (memengaruhi saldo)',
+        };
+    }
+}
+
+if (!function_exists('finance_get_settings')) {
+    function finance_get_settings(PDO $pdo): array
+    {
+        try {
+            return $pdo->query("SELECT * FROM finance_settings WHERE id = 1 LIMIT 1")->fetch(PDO::FETCH_ASSOC) ?: [];
+        } catch (Throwable $e) {
+            return [];
+        }
+    }
+}
+
+if (!function_exists('finance_earliest_posted_date')) {
+    function finance_earliest_posted_date(PDO $pdo): ?string
+    {
+        $date = $pdo->query("SELECT MIN(posted_date) FROM (
+                SELECT MIN(transaction_date) posted_date FROM transactions WHERE posting_mode='posted'
+                UNION ALL
+                SELECT MIN(movement_date) posted_date FROM operational_fund_movements WHERE posting_mode='posted'
+            ) posted_dates")->fetchColumn();
+        return $date ? (string)$date : null;
+    }
+}
+
+if (!function_exists('finance_consolidated_cash_flow_rows')) {
+    /**
+     * Arus kas riil perusahaan. Transaksi tanpa akun pusat dikecualikan karena
+     * kasnya berasal dari Dana PIC/talangan; pemakaian Dana PIC dibaca dari
+     * operational_fund_movements. Receive/return adalah transfer internal.
+     */
+    function finance_consolidated_cash_flow_rows(PDO $pdo, string $from, string $to): array
+    {
+        $stmt = $pdo->prepare("SELECT t.transaction_date,t.reference_code,t.transaction_code,t.transaction_name,t.type,
+                COALESCE(c.category_name,'-') category_name,COALESCE(a.account_name,'-') account_name,
+                COALESCE(p.project_name,'-') project_name,t.description,t.amount,t.source_module,'account' source_kind
+            FROM transactions t
+            LEFT JOIN transaction_categories c ON c.id=t.category_id
+            LEFT JOIN finance_accounts a ON a.id=t.account_id
+            LEFT JOIN projects p ON p.id=t.project_id
+            WHERE t.posting_mode='posted' AND t.account_id IS NOT NULL AND t.transaction_date BETWEEN :from AND :to");
+        $stmt->execute([':from'=>$from,':to'=>$to]);
+        $rows=$stmt->fetchAll(PDO::FETCH_ASSOC);
+
+        $fundStmt=$pdo->prepare("SELECT m.id,m.movement_date,m.movement_type,m.amount,m.description,m.source_module,m.source_id,
+                f.fund_code,COALESCE(NULLIF(cp.display_name,''),f.person_name) holder_name,COALESCE(p.project_name,'-') project_name
+            FROM operational_fund_movements m
+            INNER JOIN operational_funds f ON f.id=m.fund_id
+            LEFT JOIN company_parties cp ON cp.id=f.holder_party_id
+            LEFT JOIN projects p ON p.id=m.project_id
+            WHERE m.posting_mode='posted' AND m.movement_type IN ('expense','adjustment') AND m.movement_date BETWEEN :from AND :to");
+        $fundStmt->execute([':from'=>$from,':to'=>$to]);
+        foreach($fundStmt->fetchAll(PDO::FETCH_ASSOC) as $row){
+            $adjustment=$row['movement_type']==='adjustment';
+            $source=trim((string)$row['source_module']);
+            $rows[]=[
+                'transaction_date'=>$row['movement_date'],
+                'reference_code'=>$source!==''?strtoupper($source).(!empty($row['source_id'])?'-'.$row['source_id']:''):'-',
+                'transaction_code'=>$row['fund_code'].'-M'.$row['id'],
+                'transaction_name'=>$adjustment?'Penyesuaian Dana PIC':'Pemakaian Dana PIC',
+                'type'=>$adjustment?'income':'expense',
+                'category_name'=>'Dana Operasional PIC',
+                'account_name'=>'Dana PIC · '.$row['holder_name'],
+                'project_name'=>$row['project_name'],
+                'description'=>$row['description'],
+                'amount'=>(float)$row['amount'],
+                'source_module'=>$source?:'operational_fund',
+                'source_kind'=>'operational_fund',
+            ];
+        }
+        usort($rows,static function(array $a,array $b): int {
+            $dateCompare=strcmp((string)$b['transaction_date'],(string)$a['transaction_date']);
+            return $dateCompare!==0?$dateCompare:strcmp((string)$b['transaction_code'],(string)$a['transaction_code']);
+        });
+        return $rows;
+    }
+}
+
+if (!function_exists('finance_cash_flow_summary')) {
+    function finance_cash_flow_summary(array $rows): array
+    {
+        $income=0.0;$expense=0.0;
+        foreach($rows as $row){
+            if(($row['type']??'')==='income')$income+=(float)($row['amount']??0);
+            elseif(($row['type']??'')==='expense')$expense+=(float)($row['amount']??0);
+        }
+        return ['income_total'=>$income,'expense_total'=>$expense,'net_cash_flow'=>$income-$expense,'row_count'=>count($rows)];
+    }
+}
+
+if (!function_exists('finance_validate_posting_date')) {
+    function finance_validate_posting_date(PDO $pdo, ?string $date, ?string $postingMode): void
+    {
+        if (finance_normalize_posting_mode($postingMode, true) !== 'posted') return;
+        $date = trim((string)$date);
+        if ($date === '') return;
+        $settings = finance_get_settings($pdo);
+        $cutoverDate = trim((string)($settings['cutover_date'] ?? ''));
+        if ($cutoverDate !== '' && $date < $cutoverDate) {
+            throw new Exception('Tanggal transaksi sebelum tanggal mulai saldo riil '.$cutoverDate.'. Gunakan mode Historis/Saldo Awal agar saldo saat ini tidak berubah.');
+        }
+    }
+}
+
+if (!function_exists('finance_manual_transaction_links')) {
+    function finance_manual_transaction_links(PDO $pdo, int $transactionId): array
+    {
+        $lock = $pdo->inTransaction() ? ' FOR UPDATE' : '';
+        $movementStmt = $pdo->prepare("SELECT * FROM operational_fund_movements WHERE source_module='finance' AND source_table='transactions' AND source_id=:id ORDER BY id".$lock);
+        $movementStmt->execute([':id' => $transactionId]);
+        $debtStmt = $pdo->prepare("SELECT * FROM debts WHERE source_module='other' AND source_table='transactions' AND source_id=:id ORDER BY id".$lock);
+        $debtStmt->execute([':id' => $transactionId]);
+        return [
+            'movements' => $movementStmt->fetchAll(PDO::FETCH_ASSOC),
+            'debts' => $debtStmt->fetchAll(PDO::FETCH_ASSOC),
+        ];
+    }
+}
+
+if (!function_exists('finance_assert_linked_debt_reversible')) {
+    function finance_assert_linked_debt_reversible(PDO $pdo, array $debt): void
+    {
+        $stmt = $pdo->prepare("SELECT COUNT(*) FROM debt_payments WHERE debt_id=:id");
+        $stmt->execute([':id' => (int)$debt['id']]);
+        if ((float)($debt['paid_amount'] ?? 0) > 0 || (int)$stmt->fetchColumn() > 0) {
+            throw new Exception('Transaksi tidak dapat dihapus atau dialihkan karena hutang talangan terkait sudah memiliki pembayaran. Koreksi pembayaran hutang terlebih dahulu.');
+        }
+    }
+}
+
+if (!function_exists('finance_delete_manual_transaction_links')) {
+    function finance_delete_manual_transaction_links(PDO $pdo, int $transactionId): void
+    {
+        $links = finance_manual_transaction_links($pdo, $transactionId);
+        foreach ($links['debts'] as $debt) {
+            finance_assert_linked_debt_reversible($pdo, $debt);
+        }
+        opfund_delete_movements_by_source($pdo, 'finance', 'transactions', $transactionId);
+        $stmt = $pdo->prepare("DELETE FROM debts WHERE source_module='other' AND source_table='transactions' AND source_id=:id");
+        $stmt->execute([':id' => $transactionId]);
+    }
+}
 
 if (!function_exists('finance_generate_debt_code')) {
     function finance_generate_debt_code(PDO $pdo, string $type): string
@@ -142,6 +333,19 @@ if (!function_exists('finance_sync_project_term_receivable')) {
         }
 
         $existing = finance_find_existing_debt($pdo, 'project_term', $termId, 'receivable');
+        $postingMode = finance_normalize_posting_mode($term['posting_mode'] ?? 'posted', true);
+
+        if ($postingMode === 'historical') {
+            if ($existing) {
+                $paymentStmt = $pdo->prepare("SELECT COUNT(*) FROM debt_payments WHERE debt_id = :id");
+                $paymentStmt->execute([':id' => (int)$existing['id']]);
+                if ((float)$existing['paid_amount'] > 0 || (int)$paymentStmt->fetchColumn() > 0) {
+                    throw new Exception('Termin tidak dapat dijadikan historis karena piutangnya sudah memiliki pembayaran.');
+                }
+                $pdo->prepare("DELETE FROM debts WHERE id = :id")->execute([':id' => (int)$existing['id']]);
+            }
+            return null;
+        }
 
         if ($existing && (float)$existing['paid_amount'] > (float)$term['amount']) {
             throw new Exception('Nominal termin tidak boleh lebih kecil dari pembayaran piutang yang sudah tercatat.');
@@ -163,6 +367,8 @@ if (!function_exists('finance_sync_project_term_receivable')) {
                     due_date = :due_date,
                     source_table = 'project_payment_terms',
                     reference_code = :reference_code,
+                    posting_mode = :posting_mode,
+                    historical_reason = :historical_reason,
                     description = :description,
                     updated_at = NOW()
                 WHERE id = :id
@@ -174,6 +380,8 @@ if (!function_exists('finance_sync_project_term_receivable')) {
                 ':amount' => (float)$term['amount'],
                 ':due_date' => $term['due_date'],
                 ':reference_code' => $term['term_name'],
+                ':posting_mode' => $postingMode,
+                ':historical_reason' => $postingMode === 'opening_outstanding' ? ($term['historical_reason'] ?? null) : null,
                 ':description' => $description,
                 ':id' => (int)$existing['id']
             ]);
@@ -189,13 +397,15 @@ if (!function_exists('finance_sync_project_term_receivable')) {
                 project_id, amount, paid_amount, due_date, payment_method, proof_file,
                 reminder_days_before, notification_id, source_module, source_table, source_id,
                 reference_code, status, paid_date, description, created_by, created_at, updated_at
+                , posting_mode, historical_reason
             )
             VALUES
             (
                 :debt_code, 'receivable', 'client', :related_id, 'Termin Project', CURDATE(), :related_name,
                 :project_id, :amount, 0, :due_date, NULL, NULL,
                 7, NULL, 'project_term', 'project_payment_terms', :source_id,
-                :reference_code, 'unpaid', NULL, :description, :created_by, NOW(), NOW()
+                :reference_code, 'unpaid', NULL, :description, :created_by, NOW(), NOW(),
+                :posting_mode, :historical_reason
             )
         ");
 
@@ -208,6 +418,8 @@ if (!function_exists('finance_sync_project_term_receivable')) {
             ':due_date' => $term['due_date'],
             ':source_id' => $termId,
             ':reference_code' => $term['term_name'],
+            ':posting_mode' => $postingMode,
+            ':historical_reason' => $postingMode === 'opening_outstanding' ? ($term['historical_reason'] ?? null) : null,
             ':description' => $description,
             ':created_by' => $userId ?? ($_SESSION['user_id'] ?? null)
         ]);
@@ -225,6 +437,13 @@ if (!function_exists('finance_mark_project_term_paid')) {
     {
         $paidDate = $paidDate ?: date('Y-m-d');
         $paymentMethod = finance_normalize_payment_method($paymentMethod ?: 'bank_transfer');
+        $term = finance_get_project_term_data($pdo, $termId);
+        if (!$term) return;
+        if (($term['posting_mode'] ?? 'posted') === 'historical') {
+            finance_sync_project_term_receivable($pdo, $termId, $userId ?? ($_SESSION['user_id'] ?? null));
+            finance_sync_project_term_transaction($pdo, $termId, null, $userId, $accountId, $paymentMethod, $proofFile);
+            return;
+        }
         $debtId = finance_sync_project_term_receivable($pdo, $termId, $userId ?? ($_SESSION['user_id'] ?? null));
         if (!$debtId) return;
 
@@ -488,6 +707,8 @@ if (!function_exists('finance_create_transaction_from_debt_payment')) {
         }
 
         $transactionType = $payment['debt_type'] === 'receivable' ? 'income' : 'expense';
+        $postingMode = finance_normalize_posting_mode($payment['posting_mode'] ?? 'posted');
+        finance_validate_posting_date($pdo, $payment['payment_date'] ?? null, $postingMode);
         $method = finance_normalize_payment_method($payment['payment_method'] ?? 'cash');
         $accountId = $accountId ?: (!empty($payment['account_id']) ? (int)$payment['account_id'] : finance_get_default_account_id($pdo));
         $categoryName = $transactionType === 'income' ? 'Pembayaran Piutang' : 'Pembayaran Hutang';
@@ -497,13 +718,15 @@ if (!function_exists('finance_create_transaction_from_debt_payment')) {
             INSERT INTO transactions
             (
                 transaction_code, transaction_date, type, category_id, account_id, project_id,
-                amount, description, payment_method, proof_file, source_module, source_table,
+                amount, posting_mode, historical_reason, posted_at, posted_by,
+                description, payment_method, proof_file, source_module, source_table,
                 source_id, reference_code, created_by, created_at, updated_at
             )
             VALUES
             (
                 :code, :date, :type, :category_id, :account_id, :project_id,
-                :amount, :description, :method, :proof_file, 'debt_payment', 'debt_payments',
+                :amount, :posting_mode, :historical_reason, :posted_at, :posted_by,
+                :description, :method, :proof_file, 'debt_payment', 'debt_payments',
                 :source_id, :reference_code, :created_by, NOW(), NOW()
             )
         ");
@@ -515,6 +738,10 @@ if (!function_exists('finance_create_transaction_from_debt_payment')) {
             ':account_id' => $accountId,
             ':project_id' => $payment['project_id'] ?: null,
             ':amount' => (float)$payment['amount'],
+            ':posting_mode' => $postingMode,
+            ':historical_reason' => $postingMode === 'historical' ? ($payment['historical_reason'] ?? null) : null,
+            ':posted_at' => $postingMode === 'posted' ? date('Y-m-d H:i:s') : null,
+            ':posted_by' => $postingMode === 'posted' ? ($payment['created_by'] ?: null) : null,
             ':description' => ($transactionType === 'income' ? 'Pembayaran piutang: ' : 'Pembayaran hutang: ') . $payment['debt_code'] . ' - ' . $payment['related_name'],
             ':method' => $method,
             ':proof_file' => $payment['proof_file'] ?: null,
@@ -608,6 +835,7 @@ if (!function_exists('finance_recalculate_account_balance')) {
                 COALESCE(SUM(CASE WHEN type='expense' THEN amount ELSE 0 END), 0) AS expense_total
             FROM transactions
             WHERE account_id = :account_id
+              AND posting_mode = 'posted'
         ");
         $stmt->execute([':account_id' => $accountId]);
         $row = $stmt->fetch(PDO::FETCH_ASSOC);
@@ -661,8 +889,11 @@ if (!function_exists('finance_sync_project_term_transaction')) {
         $receivedAmount = isset($term['received_amount']) && (float)$term['received_amount'] > 0
             ? (float)$term['received_amount']
             : (float)$term['amount'];
+        $postingMode = (($term['posting_mode'] ?? 'posted') === 'historical') ? 'historical' : 'posted';
+        $historicalReason = $postingMode === 'historical' ? ($term['historical_reason'] ?? null) : null;
+        finance_validate_posting_date($pdo, $term['paid_date'] ?: date('Y-m-d'), $postingMode);
 
-        $accountId = $accountId ?: finance_get_default_account_id($pdo);
+        $accountId = $accountId ?: ($postingMode === 'historical' ? null : finance_get_default_account_id($pdo));
         $paymentMethod = finance_normalize_payment_method($paymentMethod ?: 'bank_transfer');
         $categoryId = finance_get_or_create_category_id($pdo, 'Pendapatan Project', 'income');
 
@@ -691,6 +922,10 @@ if (!function_exists('finance_sync_project_term_transaction')) {
                     account_id = :account_id,
                     project_id = :project_id,
                     amount = :amount,
+                    posting_mode = :posting_mode,
+                    historical_reason = :historical_reason,
+                    posted_at = :posted_at,
+                    posted_by = :posted_by,
                     description = :description,
                     payment_method = :payment_method,
                     proof_file = COALESCE(:proof_file, proof_file),
@@ -707,6 +942,10 @@ if (!function_exists('finance_sync_project_term_transaction')) {
                 ':account_id' => $accountId,
                 ':project_id' => $term['project_id'],
                 ':amount' => $receivedAmount,
+                ':posting_mode' => $postingMode,
+                ':historical_reason' => $historicalReason,
+                ':posted_at' => $postingMode === 'posted' ? date('Y-m-d H:i:s') : null,
+                ':posted_by' => $postingMode === 'posted' ? ($userId ?? ($_SESSION['user_id'] ?? null)) : null,
                 ':description' => $description,
                 ':payment_method' => $paymentMethod,
                 ':proof_file' => $proofFile,
@@ -731,6 +970,10 @@ if (!function_exists('finance_sync_project_term_transaction')) {
                 account_id,
                 project_id,
                 amount,
+                posting_mode,
+                historical_reason,
+                posted_at,
+                posted_by,
                 description,
                 payment_method,
                 proof_file,
@@ -751,6 +994,10 @@ if (!function_exists('finance_sync_project_term_transaction')) {
                 :account_id,
                 :project_id,
                 :amount,
+                :posting_mode,
+                :historical_reason,
+                :posted_at,
+                :posted_by,
                 :description,
                 :payment_method,
                 :proof_file,
@@ -770,6 +1017,10 @@ if (!function_exists('finance_sync_project_term_transaction')) {
             ':account_id' => $accountId,
             ':project_id' => $term['project_id'],
             ':amount' => $receivedAmount,
+            ':posting_mode' => $postingMode,
+            ':historical_reason' => $historicalReason,
+            ':posted_at' => $postingMode === 'posted' ? date('Y-m-d H:i:s') : null,
+            ':posted_by' => $postingMode === 'posted' ? ($userId ?? ($_SESSION['user_id'] ?? null)) : null,
             ':description' => $description,
             ':payment_method' => $paymentMethod,
             ':proof_file' => $proofFile,
@@ -896,7 +1147,9 @@ if (!function_exists('finance_upsert_transaction')) {
         ?string $referenceCode = null,
         ?int $userId = null,
         ?int $accountId = null,
-        ?string $proofFile = null
+        ?string $proofFile = null,
+        string $postingMode = 'posted',
+        ?string $historicalReason = null
     ): ?int {
         if ($amount <= 0) {
             finance_delete_transaction_by_source($pdo, $sourceModule, $sourceTable, $sourceId);
@@ -908,6 +1161,9 @@ if (!function_exists('finance_upsert_transaction')) {
         $categoryId = finance_get_or_create_category_id($pdo, $categoryName, $type);
         $paymentMethod = finance_normalize_payment_method($paymentMethod);
         $transactionDate = $transactionDate ?: date('Y-m-d');
+        $postingMode = finance_normalize_posting_mode($postingMode);
+        $historicalReason = $postingMode === 'historical' ? trim((string)$historicalReason) : null;
+        finance_validate_posting_date($pdo, $transactionDate, $postingMode);
 
         $existing = finance_find_transaction_by_source($pdo, $sourceModule, $sourceTable, $sourceId);
 
@@ -922,6 +1178,10 @@ if (!function_exists('finance_upsert_transaction')) {
                     account_id = :account_id,
                     project_id = :project_id,
                     amount = :amount,
+                    posting_mode = :posting_mode,
+                    historical_reason = :historical_reason,
+                    posted_at = :posted_at,
+                    posted_by = :posted_by,
                     description = :description,
                     payment_method = :payment_method,
                     proof_file = COALESCE(:proof_file, proof_file),
@@ -939,6 +1199,10 @@ if (!function_exists('finance_upsert_transaction')) {
                 ':account_id' => $accountId,
                 ':project_id' => $projectId,
                 ':amount' => $amount,
+                ':posting_mode' => $postingMode,
+                ':historical_reason' => $historicalReason,
+                ':posted_at' => $postingMode === 'posted' ? date('Y-m-d H:i:s') : null,
+                ':posted_by' => $postingMode === 'posted' ? ($userId ?? ($_SESSION['user_id'] ?? null)) : null,
                 ':description' => $description,
                 ':payment_method' => $paymentMethod,
                 ':proof_file' => $proofFile,
@@ -959,13 +1223,15 @@ if (!function_exists('finance_upsert_transaction')) {
             INSERT INTO transactions
             (
                 transaction_code, transaction_date, type, category_id, account_id, project_id,
-                amount, description, payment_method, proof_file, source_module, source_table,
+                amount, posting_mode, historical_reason, posted_at, posted_by,
+                description, payment_method, proof_file, source_module, source_table,
                 source_id, reference_code, created_by, created_at, updated_at
             )
             VALUES
             (
                 :transaction_code, :transaction_date, :type, :category_id, :account_id, :project_id,
-                :amount, :description, :payment_method, :proof_file, :source_module, :source_table,
+                :amount, :posting_mode, :historical_reason, :posted_at, :posted_by,
+                :description, :payment_method, :proof_file, :source_module, :source_table,
                 :source_id, :reference_code, :created_by, NOW(), NOW()
             )
         ");
@@ -977,6 +1243,10 @@ if (!function_exists('finance_upsert_transaction')) {
             ':account_id' => $accountId,
             ':project_id' => $projectId,
             ':amount' => $amount,
+            ':posting_mode' => $postingMode,
+            ':historical_reason' => $historicalReason,
+            ':posted_at' => $postingMode === 'posted' ? date('Y-m-d H:i:s') : null,
+            ':posted_by' => $postingMode === 'posted' ? ($userId ?? ($_SESSION['user_id'] ?? null)) : null,
             ':description' => $description,
             ':payment_method' => $paymentMethod,
             ':proof_file' => $proofFile,
@@ -1325,7 +1595,9 @@ if (!function_exists('finance_sync_project_transaction')) {
                 $pt['person_name'] ?? null,
                 !empty($pt['personal_employee_id']) ? (int)$pt['personal_employee_id'] : null,
                 $paymentMethod,
-                $userId
+                $userId,
+                $pt['posting_mode'] ?? 'posted',
+                $pt['historical_reason'] ?? null
             );
             return null;
         }
@@ -1346,7 +1618,10 @@ if (!function_exists('finance_sync_project_transaction')) {
             $paymentMethod,
             'project_transactions#' . $projectTransactionId,
             $userId,
-            $accountId
+            $accountId,
+            null,
+            $pt['posting_mode'] ?? 'posted',
+            $pt['historical_reason'] ?? null
         );
     }
 }
@@ -1452,7 +1727,9 @@ if (!function_exists('finance_apply_project_expense_source')) {
         ?string $personName = null,
         ?int $personalEmployeeId = null,
         ?string $paymentMethod = null,
-        ?int $userId = null
+        ?int $userId = null,
+        string $postingMode = 'posted',
+        ?string $historicalReason = null
     ): void {
         $amount = (float)$amount;
         if ($amount <= 0) {
@@ -1463,17 +1740,21 @@ if (!function_exists('finance_apply_project_expense_source')) {
         $fundingSource = in_array($fundingSource, ['company', 'operational_fund', 'person'], true) ? $fundingSource : 'company';
         $transactionDate = $transactionDate ?: date('Y-m-d');
         $paymentMethod = finance_normalize_payment_method($paymentMethod ?: 'cash');
+        $postingMode = finance_normalize_posting_mode($postingMode);
         finance_clear_project_expense_links($pdo, $sourceTable, $sourceId);
 
         if ($fundingSource === 'company') {
-            if (!$accountId) {
+            if (!$accountId && $postingMode === 'posted') {
                 throw new Exception('Akun kas/bank wajib dipilih untuk pengeluaran dari perusahaan.');
             }
-            finance_upsert_transaction($pdo, 'project', $sourceTable, $sourceId, 'expense', $projectId, $amount, $description, $category, $transactionDate, $paymentMethod, strtoupper($sourceTable) . '-' . $sourceId, $userId, $accountId);
+            finance_upsert_transaction($pdo, 'project', $sourceTable, $sourceId, 'expense', $projectId, $amount, $description, $category, $transactionDate, $paymentMethod, strtoupper($sourceTable) . '-' . $sourceId, $userId, $accountId, null, $postingMode, $historicalReason);
             return;
         }
 
         if ($fundingSource === 'operational_fund') {
+            if ($postingMode === 'historical' && !$operationalFundId) {
+                return;
+            }
             if (!$operationalFundId || !function_exists('opfund_get')) {
                 throw new Exception('Dana Operasional wajib dipilih.');
             }
@@ -1483,6 +1764,10 @@ if (!function_exists('finance_apply_project_expense_source')) {
             }
             $holderName = trim((string)($fund['person_name'] ?? ''));
             $holderEmployeeId = !empty($fund['employee_id']) ? (int)$fund['employee_id'] : null;
+            if ($postingMode === 'historical') {
+                opfund_add_movement($pdo, $operationalFundId, 'expense', $amount, $transactionDate, null, $description, 'project', $sourceTable, $sourceId, $projectId, $paymentMethod, $userId, 'historical', $historicalReason);
+                return;
+            }
             $balanceBefore = (float)($fund['current_balance'] ?? 0);
             $usedFromOperational = min($amount, max(0, $balanceBefore));
             $shortfall = max(0, $amount - $usedFromOperational);
@@ -1505,6 +1790,9 @@ if (!function_exists('finance_apply_project_expense_source')) {
         }
         if ($personName === '') {
             throw new Exception('Nama personal wajib diisi untuk talangan personal.');
+        }
+        if ($postingMode === 'historical') {
+            return;
         }
         finance_upsert_project_person_debt($pdo, $sourceTable, $sourceId, $projectId, $personName, $amount, $category, $description, $transactionDate, null, $userId, $personalEmployeeId ?: null);
     }

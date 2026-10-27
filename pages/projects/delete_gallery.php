@@ -27,23 +27,15 @@ try {
     $path = (string)($gallery['image_path'] ?? '');
     $isExternal = preg_match('/^https?:\/\//i', $path);
 
-    if (!$isExternal && $path !== '') {
-        $filePath = realpath(__DIR__ . '/../../' . $path);
-        $uploadRoot = realpath(__DIR__ . '/../../uploads/project_galleries');
-
-        if ($filePath && $uploadRoot && strpos($filePath, $uploadRoot) === 0 && file_exists($filePath)) {
-            unlink($filePath);
-        }
-    }
-
     $delete = $pdo->prepare("
         DELETE FROM project_galleries
         WHERE id = :id
         LIMIT 1
     ");
     $delete->execute([':id' => $id]);
+    if (!$isExternal) upload_delete_file($path);
 
     redirect('pages/projects/detail.php?id=' . $project_id . '&tab=gallery');
-} catch (Exception $e) {
+} catch (Throwable $e) {
     redirect('pages/projects/detail.php?id=' . $project_id . '&tab=gallery');
 }

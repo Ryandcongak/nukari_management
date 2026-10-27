@@ -87,7 +87,7 @@ $isProjectPage = strpos(str_replace('\\', '/', $_SERVER['SCRIPT_NAME'] ?? ''), '
 <!-- Bootstrap JS -->
 <script src="<?= base_url('assets/vendor/bootstrap/js/bootstrap.bundle.min.js'); ?>"></script>
 <!-- Nukari UI Global Components -->
-<script src="<?= base_url('assets/js/nukari-ui.js'); ?>?v=1.2"></script>
+<script src="<?= base_url('assets/js/nukari-ui.js'); ?>?v=1.3"></script>
 
 <?php if ($isProjectPage): ?>
 <script>

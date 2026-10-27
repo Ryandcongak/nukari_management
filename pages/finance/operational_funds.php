@@ -16,6 +16,8 @@ try {
         $action = $_POST['action'] ?? '';
 
         if ($action === 'receive') {
+            $postingMode = finance_validate_posting_mode($_POST['posting_mode'] ?? 'posted', $_POST['historical_reason'] ?? null);
+            $historicalReason = $postingMode === 'historical' ? trim((string)($_POST['historical_reason'] ?? '')) : null;
             $partyId = (int)($_POST['party_id'] ?? 0);
             if (!$partyId) throw new Exception('Pilih Pihak/PIC penerima dana operasional.');
 
@@ -32,12 +34,15 @@ try {
             $fund = opfund_find_open_by_party($pdo, $partyId);
             $fundId = $fund ? (int)$fund['id'] : opfund_create_for_party($pdo, $partyId, $userId, 'Dibuat otomatis dari pemberian dana operasional.');
             $partyName='';foreach($parties as $p){if((int)$p['id']===$partyId){$partyName=$p['display_name'];break;}}
-            opfund_add_movement($pdo, $fundId, 'receive', $amount, $date, $accountId, $notes ?: 'Dana operasional diberikan kepada ' . $partyName, 'finance', 'operational_funds', $fundId, null, $method, $userId);
+            $movementId = opfund_add_movement($pdo, $fundId, 'receive', $amount, $date, $accountId, $notes ?: 'Dana operasional diberikan kepada ' . $partyName, 'finance', 'operational_funds', $fundId, null, $method, $userId, $postingMode, $historicalReason);
+            log_activity($pdo, 'Operational Fund', 'CREATE', finance_posting_mode_label($postingMode) . ($historicalReason ? ' — ' . $historicalReason : ''), $movementId, 'operational_fund_movements');
             $pdo->commit();
             $success = 'Dana operasional berhasil dicatat.';
         }
 
         if ($action === 'return') {
+            $postingMode = finance_validate_posting_mode($_POST['posting_mode'] ?? 'posted', $_POST['historical_reason'] ?? null);
+            $historicalReason = $postingMode === 'historical' ? trim((string)($_POST['historical_reason'] ?? '')) : null;
             $fundId = (int)($_POST['fund_id'] ?? 0);
             $amount = f_money_to_number($_POST['amount'] ?? 0);
             $accountId = (int)($_POST['account_id'] ?? 0);
@@ -50,11 +55,12 @@ try {
             $fund = $stmt->fetch(PDO::FETCH_ASSOC);
             if (!$fund) throw new Exception('Data dana operasional tidak ditemukan.');
             if ($amount <= 0) throw new Exception('Nominal pengembalian harus lebih dari nol.');
-            if ($amount > (float)$fund['current_balance']) throw new Exception('Nominal pengembalian tidak boleh melebihi sisa saldo Pihak/PIC.');
+            if ($postingMode === 'posted' && $amount > (float)$fund['current_balance']) throw new Exception('Nominal pengembalian tidak boleh melebihi sisa saldo Pihak/PIC.');
             if (!$accountId) throw new Exception('Pilih akun kas/bank tujuan pengembalian.');
 
             $pdo->beginTransaction();
-            opfund_add_movement($pdo, $fundId, 'return', $amount, $date, $accountId, $notes ?: 'Pengembalian sisa dana operasional dari ' . $fund['person_name'], 'finance', 'operational_funds', $fundId, null, $method, $userId);
+            $movementId = opfund_add_movement($pdo, $fundId, 'return', $amount, $date, $accountId, $notes ?: 'Pengembalian sisa dana operasional dari ' . $fund['person_name'], 'finance', 'operational_funds', $fundId, null, $method, $userId, $postingMode, $historicalReason);
+            log_activity($pdo, 'Operational Fund', 'CREATE', finance_posting_mode_label($postingMode) . ($historicalReason ? ' — ' . $historicalReason : ''), $movementId, 'operational_fund_movements');
             $pdo->commit();
             $success = 'Pengembalian dana operasional berhasil dicatat.';
         }
@@ -194,6 +200,7 @@ require_once __DIR__ . '/../../includes/sidebar.php';
                     <div class="col-md-6"><label class="form-label">Pihak/PIC Penerima</label><select name="party_id" class="form-select" required><option value="">Pilih Pihak/PIC</option><?php foreach ($parties as $party): ?><option value="<?= (int)$party['id']; ?>"><?= f_e($party['display_name']); ?><?= $party['role_labels'] ? ' · '.f_e($party['role_labels']) : ''; ?></option><?php endforeach; ?></select><div class="form-text"><a href="<?=base_url('pages/master/parties.php');?>">Tambah Pihak/PIC baru</a></div></div>
                     <div class="col-md-6"><label class="form-label">Nominal</label><input type="text" name="amount" class="form-control" required placeholder="Contoh: 5000000"></div>
                     <div class="col-md-6"><label class="form-label">Metode</label><select name="payment_method" class="form-select"><option value="bank_transfer">Bank Transfer</option><option value="cash">Cash</option><option value="qris">QRIS</option><option value="other">Lainnya</option></select></div>
+                    <?php if (finance_user_can_use_non_posting()): ?><div class="col-12"><label class="form-label">Dampak Saldo</label><select name="posting_mode" class="form-select posting-mode-select"><option value="posted">Pergerakan berjalan — memengaruhi saldo</option><option value="historical">Catatan historis — tidak memengaruhi saldo akun/PIC</option></select></div><div class="col-12 d-none historical-reason-field"><label class="form-label">Alasan / Referensi Historis</label><textarea name="historical_reason" class="form-control" rows="2"></textarea></div><?php endif; ?>
                     <div class="col-12"><label class="form-label">Keterangan</label><textarea name="description" class="form-control" rows="3" placeholder="Contoh: Dana belanja material project / operasional lapangan"></textarea></div>
                 </div>
             </div>
@@ -214,6 +221,7 @@ require_once __DIR__ . '/../../includes/sidebar.php';
                 <div class="mb-3"><label class="form-label">Akun Tujuan Perusahaan</label><select name="account_id" class="form-select" required><option value="">Pilih akun</option><?php foreach ($accounts as $a): ?><option value="<?= (int)$a['id']; ?>"><?= f_e($a['account_name']); ?></option><?php endforeach; ?></select></div>
                 <div class="mb-3"><label class="form-label">Nominal Dikembalikan</label><input type="text" name="amount" id="returnAmount" class="form-control" required></div>
                 <div class="mb-3"><label class="form-label">Metode</label><select name="payment_method" class="form-select"><option value="cash">Cash</option><option value="bank_transfer">Bank Transfer</option><option value="qris">QRIS</option><option value="other">Lainnya</option></select></div>
+                <?php if (finance_user_can_use_non_posting()): ?><div class="mb-3"><label class="form-label">Dampak Saldo</label><select name="posting_mode" class="form-select posting-mode-select"><option value="posted">Pengembalian berjalan — memengaruhi saldo</option><option value="historical">Catatan historis — tidak memengaruhi saldo akun/PIC</option></select></div><div class="mb-3 d-none historical-reason-field"><label class="form-label">Alasan / Referensi Historis</label><textarea name="historical_reason" class="form-control" rows="2"></textarea></div><?php endif; ?>
                 <div class="mb-3"><label class="form-label">Keterangan</label><textarea name="description" class="form-control" rows="3"></textarea></div>
             </div>
             <div class="modal-footer"><button type="button" class="btn btn-light" data-bs-dismiss="modal">Batal</button><button class="btn btn-nukari">Simpan</button></div>
@@ -229,6 +237,7 @@ returnModal?.addEventListener('show.bs.modal', function(event){
     document.getElementById('returnAmount').value = btn.getAttribute('data-balance');
     document.getElementById('returnInfo').textContent = 'Penerima: ' + btn.getAttribute('data-name') + ' | Sisa saldo: Rp ' + Number(btn.getAttribute('data-balance')).toLocaleString('id-ID');
 });
+document.querySelectorAll('.posting-mode-select').forEach(function(select){select.addEventListener('change',function(){const form=this.closest('form');const historical=this.value==='historical';const box=form.querySelector('.historical-reason-field');box?.classList.toggle('d-none',!historical);const reason=box?.querySelector('[name="historical_reason"]');if(reason)reason.required=historical;});});
 </script>
 
 <?php require_once __DIR__ . '/../../includes/footer.php'; ?>

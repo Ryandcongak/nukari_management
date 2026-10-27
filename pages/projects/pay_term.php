@@ -6,57 +6,20 @@ require_once __DIR__ . '/../../includes/project_status_helper.php';
 
 function uploadProjectEvidenceReceipts($files, $transaction_id, $pdo)
 {
-    $firstUploadedPath = null;
     $transaction_id = (int) $transaction_id;
-    if ($transaction_id <= 0 || !isset($files) || empty($files['name'][0])) {
-        return;
-    }
-
-    $uploadDir = __DIR__ . '/../../uploads/project_transactions/';
-    if (!is_dir($uploadDir)) {
-        mkdir($uploadDir, 0777, true);
-    }
-
-    $allowedExt = ['jpg', 'jpeg', 'png', 'webp'];
-    $maxSize = 5 * 1024 * 1024;
-
-    foreach ($files['name'] as $key => $name) {
-        if (($files['error'][$key] ?? UPLOAD_ERR_NO_FILE) === UPLOAD_ERR_NO_FILE) {
-            continue;
-        }
-        if ($files['error'][$key] !== UPLOAD_ERR_OK) {
-            throw new Exception('Ada foto bukti yang gagal diupload.');
-        }
-        if ($files['size'][$key] > $maxSize) {
-            throw new Exception('Ukuran setiap foto bukti maksimal 5MB.');
-        }
-        $ext = strtolower(pathinfo((string) $name, PATHINFO_EXTENSION));
-        if (!in_array($ext, $allowedExt, true)) {
-            throw new Exception('Format bukti harus JPG, JPEG, PNG, atau WEBP.');
-        }
-
-        $fileName = 'trx_' . $transaction_id . '_' . date('YmdHis') . '_' . bin2hex(random_bytes(4)) . '.' . $ext;
-        $targetPath = $uploadDir . $fileName;
-        if (!move_uploaded_file($files['tmp_name'][$key], $targetPath)) {
-            throw new Exception('Gagal menyimpan foto bukti.');
-        }
-
+    if ($transaction_id <= 0) return [];
+    $paths = upload_store_multiple($files, 'project_transactions', 'trx_' . $transaction_id, upload_image_mimes(), 5242880, 10);
+    try {
         $stmt = $pdo->prepare("
             INSERT INTO project_transaction_receipts (transaction_id, image_path)
             VALUES (:transaction_id, :image_path)
         ");
-        $relativePath = 'uploads/project_transactions/' . $fileName;
-        if ($firstUploadedPath === null) {
-            $firstUploadedPath = $relativePath;
-        }
-
-        $stmt->execute([
-            ':transaction_id' => $transaction_id,
-            ':image_path' => $relativePath
-        ]);
+        foreach ($paths as $path) $stmt->execute([':transaction_id' => $transaction_id, ':image_path' => $path]);
+    } catch (Throwable $e) {
+        foreach ($paths as $path) upload_delete_file($path);
+        throw $e;
     }
-
-    return $firstUploadedPath;
+    return $paths;
 }
 
 $id = $_GET['id'] ?? null;
@@ -86,6 +49,7 @@ $pageTitle = 'Konfirmasi Pembayaran Termin - Nukari';
 $error = '';
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+    $uploadedReceiptPaths = [];
 
     if ($term['status'] === 'paid') {
         redirect('pages/projects/detail.php?id=' . $term['project_id']);
@@ -173,7 +137,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             ':id' => $id
         ]);
 
-        $firstReceiptPath = uploadProjectEvidenceReceipts($_FILES['receipt_images'] ?? null, $transaction_id, $pdo);
+        $uploadedReceiptPaths = uploadProjectEvidenceReceipts($_FILES['receipt_images'] ?? null, $transaction_id, $pdo);
+        $firstReceiptPath = $uploadedReceiptPaths[0] ?? null;
 
         // Integrasi finance: pembayaran termin otomatis melunasi Piutang dan masuk ke transaksi keuangan.
         finance_mark_project_term_paid($pdo, (int) $id, date('Y-m-d'), $accountId, $paymentMethod, $firstReceiptPath, $_SESSION['user_id'] ?? null);
@@ -182,8 +147,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         project_sync_completion_status($pdo, (int)$term['project_id']);
 
         redirect('pages/projects/detail.php?id=' . $term['project_id'] . '&tab=terms');
-    } catch (Exception $e) {
+    } catch (Throwable $e) {
         if ($pdo->inTransaction()) $pdo->rollBack();
+        foreach ($uploadedReceiptPaths as $path) upload_delete_file($path);
         $error = 'Terjadi kesalahan saat memproses pembayaran: ' . $e->getMessage();
     }
 }

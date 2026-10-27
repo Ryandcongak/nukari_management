@@ -361,25 +361,34 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         if (!in_array($ext, ['xls', 'xlsx', 'csv'])) {
             $error = 'Format file harus .xls, .xlsx, atau .csv.';
         } else {
+            $storedImportPath = null;
+            $targetPath = null;
             try {
-                validate_upload($file, ['application/vnd.ms-excel','application/vnd.openxmlformats-officedocument.spreadsheetml.sheet','text/csv','text/plain'], 10485760);
+                $storedImportPath = upload_store_file(
+                    $file,
+                    'attendance_imports',
+                    'attendance',
+                    [
+                        'application/vnd.ms-excel' => 'xls',
+                        'application/x-ole-storage' => 'xls',
+                        'application/CDFV2' => 'xls',
+                        'application/vnd.ms-office' => 'xls',
+                        'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' => 'xlsx',
+                        'application/zip' => 'xlsx',
+                        'text/csv' => 'csv',
+                        'text/x-csv' => 'csv',
+                        'application/csv' => 'csv',
+                        'text/plain' => 'csv',
+                    ],
+                    10485760
+                );
+                $targetPath = upload_resolve_file($storedImportPath);
+                if (!$targetPath) throw new RuntimeException('File import tidak dapat dibaca kembali.');
             } catch (Throwable $uploadError) {
                 $error = $uploadError->getMessage();
             }
         }
         if ($error === '') {
-            $uploadDir = __DIR__ . '/../../uploads/attendance_imports/';
-
-            if (!is_dir($uploadDir)) {
-                mkdir($uploadDir, 0777, true);
-            }
-
-            $newFileName = 'attendance_' . date('Ymd_His') . '.' . $ext;
-            $targetPath = $uploadDir . $newFileName;
-
-            if (!move_uploaded_file($file['tmp_name'], $targetPath)) {
-                $error = 'Gagal menyimpan file upload.';
-            } else {
                 try {
                     $spreadsheet = IOFactory::load($targetPath);
 
@@ -466,11 +475,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     } else {
                         $success = "Import selesai. Data baru: {$imported}, data diperbarui: {$updated}, dilewati: {$skipped}.";
                     }
-                } catch (Exception $e) {
+                } catch (Throwable $e) {
                     $error = 'Gagal membaca file. Detail: ' . $e->getMessage();
                 }
-            }
         }
+        upload_delete_file($storedImportPath ?? null);
     }
 }
 

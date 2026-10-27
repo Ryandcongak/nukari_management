@@ -27,6 +27,7 @@ $pages = [
     'pages/finance/transactions.php' => ['q' => '__nukari_smoke__'],
     'pages/reports/index.php' => ['type' => 'payroll', 'from' => '2000-01-01', 'to' => date('Y-m-d')],
     'pages/projects/index.php' => ['q' => '__nukari_smoke__'],
+    'pages/help/index.php' => ['q' => 'payroll'],
 ];
 
 $childCode = <<<'PHP'

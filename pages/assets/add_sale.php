@@ -5,6 +5,7 @@ $id = (int)($_POST['asset_id'] ?? 0);
 if ($id <= 0) redirect('pages/assets/index.php');
 if ($_SERVER['REQUEST_METHOD'] !== 'POST') redirect('pages/assets/detail.php?id=' . $id);
 
+$proof = null;
 try {
     $assetStmt = $pdo->prepare("SELECT * FROM assets WHERE id=:id LIMIT 1");
     $assetStmt->execute([':id'=>$id]);
@@ -18,13 +19,15 @@ try {
     $proof = asset_upload_file($_FILES['proof_file'] ?? [], 'assets', 'asset_sale', ['jpg','jpeg','png','webp','pdf']);
     $paymentMethod = $_POST['payment_method'] ?? 'cash';
     $accountId = (int)($_POST['account_id'] ?? 0);
+    $postingMode = finance_validate_posting_mode($_POST['posting_mode'] ?? 'posted', $_POST['historical_reason'] ?? null);
+    $historicalReason = $postingMode === 'historical' ? trim((string)($_POST['historical_reason'] ?? '')) : null;
     if ($salePrice <= 0) throw new Exception('Harga jual wajib lebih dari nol.');
     if ($accountId <= 0) throw new Exception('Pilih akun kas/bank penerima penjualan.');
     $desc = 'Penjualan aset: ' . ($asset['asset_name'] ?? '-') . ' kepada ' . clean_input($_POST['buyer_name'] ?? '-');
     $pdo->beginTransaction();
     $projectId = (int)($_POST['project_id'] ?? 0) ?: null;
     $saleDate = $_POST['sale_date'] ?: date('Y-m-d');
-    $transactionId = asset_create_transaction($pdo, 'income', $salePrice, $desc, $paymentMethod, $proof, $projectId, $id, $accountId, $saleDate);
+    $transactionId = asset_create_transaction($pdo, 'income', $salePrice, $desc, $paymentMethod, $proof, $projectId, $id, $accountId, $saleDate, $postingMode, $historicalReason);
 
     $stmt = $pdo->prepare("INSERT INTO asset_sales (asset_id, project_id, account_id, sale_date, buyer_name, buyer_phone, sale_price, book_value, profit_loss, payment_method, transaction_id, proof_file, notes, created_by) VALUES (:asset_id, :project_id, :account_id, :sale_date, :buyer_name, :buyer_phone, :sale_price, :book_value, :profit_loss, :payment_method, :transaction_id, :proof_file, :notes, :created_by)");
     $stmt->execute([
@@ -46,15 +49,17 @@ try {
     $saleId = (int)$pdo->lastInsertId();
     $projectTransactionId = null;
     if ($projectId) {
-        $projectTransactionId = asset_create_project_mirror($pdo, $projectId, 'income', $salePrice, 'Penjualan Aset', $desc, 'asset_sale', $saleId, $paymentMethod, $accountId, $saleDate);
+        $projectTransactionId = asset_create_project_mirror($pdo, $projectId, 'income', $salePrice, 'Penjualan Aset', $desc, 'asset_sale', $saleId, $paymentMethod, $accountId, $saleDate, $postingMode, $historicalReason);
         $pdo->prepare("UPDATE asset_sales SET project_transaction_id=:project_transaction_id WHERE id=:id")->execute([':project_transaction_id'=>$projectTransactionId, ':id'=>$saleId]);
     }
     $pdo->prepare("UPDATE assets SET asset_status='sold', current_value=0, disposed_at=:sale_date, disposed_reason='Dijual kembali', updated_at=NOW() WHERE id=:id")->execute([':sale_date'=>$saleDate, ':id'=>$id]);
     asset_add_event($pdo, $id, 'sale', 'Aset dijual kembali', $desc . '. Harga jual: ' . $salePrice . ', laba/rugi: ' . $profitLoss, 'asset_sales', $saleId, ($_POST['sale_date'] ?: date('Y-m-d')) . ' 00:00:00');
+    log_activity($pdo, 'Asset Sale', 'CREATE', finance_posting_mode_label($postingMode) . ($historicalReason ? ' — ' . $historicalReason : ''), $transactionId, 'transactions');
     $pdo->commit();
     $_SESSION['success'] = 'Penjualan aset berhasil dicatat dan transaksi income otomatis dibuat.';
-} catch (Exception $e) {
+} catch (Throwable $e) {
     if ($pdo->inTransaction()) $pdo->rollBack();
+    upload_delete_file($proof);
     $_SESSION['error'] = $e->getMessage();
 }
 redirect('pages/assets/detail.php?id=' . $id . '#sale');

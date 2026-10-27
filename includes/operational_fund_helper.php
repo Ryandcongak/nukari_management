@@ -105,7 +105,8 @@ if (!function_exists('opfund_recalculate')) {
                 COALESCE(SUM(CASE WHEN movement_type = 'personal_advance' THEN amount ELSE 0 END),0) AS personal_advance,
                 COALESCE(SUM(CASE WHEN movement_type = 'adjustment' THEN amount ELSE 0 END),0) AS adjustment
             FROM operational_fund_movements
-            WHERE fund_id = :fund_id");
+            WHERE fund_id = :fund_id
+              AND posting_mode = 'posted'");
         $stmt->execute([':fund_id' => $fundId]);
         $row = $stmt->fetch(PDO::FETCH_ASSOC) ?: [];
 
@@ -182,7 +183,9 @@ if (!function_exists('opfund_add_movement')) {
         ?int $sourceId = null,
         ?int $projectId = null,
         ?string $paymentMethod = null,
-        ?int $userId = null
+        ?int $userId = null,
+        string $postingMode = 'posted',
+        ?string $historicalReason = null
     ): int {
         if (!in_array($movementType, ['receive','expense','return','personal_advance','adjustment'], true)) {
             throw new Exception('Jenis mutasi dana operasional tidak valid.');
@@ -192,15 +195,19 @@ if (!function_exists('opfund_add_movement')) {
         }
         $movementDate = $movementDate ?: date('Y-m-d');
         $paymentMethod = function_exists('finance_normalize_payment_method') ? finance_normalize_payment_method($paymentMethod ?: 'cash') : ($paymentMethod ?: 'cash');
+        $postingMode = function_exists('finance_normalize_posting_mode') ? finance_normalize_posting_mode($postingMode) : ($postingMode === 'historical' ? 'historical' : 'posted');
+        if (function_exists('finance_validate_posting_date')) finance_validate_posting_date($pdo, $movementDate, $postingMode);
 
         $stmt = $pdo->prepare("INSERT INTO operational_fund_movements
-            (fund_id, movement_date, movement_type, amount, account_id, project_id, source_module, source_table, source_id, description, payment_method, created_by, created_at)
-            VALUES (:fund_id, :movement_date, :movement_type, :amount, :account_id, :project_id, :source_module, :source_table, :source_id, :description, :payment_method, :created_by, NOW())");
+            (fund_id, movement_date, movement_type, amount, posting_mode, historical_reason, account_id, project_id, source_module, source_table, source_id, description, payment_method, created_by, created_at)
+            VALUES (:fund_id, :movement_date, :movement_type, :amount, :posting_mode, :historical_reason, :account_id, :project_id, :source_module, :source_table, :source_id, :description, :payment_method, :created_by, NOW())");
         $stmt->execute([
             ':fund_id' => $fundId,
             ':movement_date' => $movementDate,
             ':movement_type' => $movementType,
             ':amount' => $amount,
+            ':posting_mode' => $postingMode,
+            ':historical_reason' => $postingMode === 'historical' ? $historicalReason : null,
             ':account_id' => $accountId,
             ':project_id' => $projectId,
             ':source_module' => $sourceModule,
@@ -229,7 +236,8 @@ if (!function_exists('opfund_account_effect_totals')) {
                 COALESCE(SUM(CASE WHEN movement_type = 'receive' THEN amount ELSE 0 END),0) AS out_total,
                 COALESCE(SUM(CASE WHEN movement_type = 'return' THEN amount ELSE 0 END),0) AS in_total
             FROM operational_fund_movements
-            WHERE account_id = :account_id");
+            WHERE account_id = :account_id
+              AND posting_mode = 'posted'");
         $stmt->execute([':account_id' => $accountId]);
         $row = $stmt->fetch(PDO::FETCH_ASSOC) ?: [];
         return [
@@ -243,17 +251,19 @@ if (!function_exists('opfund_summary')) {
     function opfund_summary(PDO $pdo): array
     {
         if (!opfund_table_exists($pdo, 'operational_funds')) {
-            return ['open_count' => 0, 'active_balance' => 0, 'total_advance' => 0, 'total_received' => 0];
+            return ['open_count' => 0, 'active_balance' => 0, 'active_cash' => 0, 'total_advance' => 0, 'total_received' => 0];
         }
         $row = $pdo->query("SELECT
                 COUNT(CASE WHEN status = 'open' THEN 1 END) AS open_count,
                 COALESCE(SUM(CASE WHEN status = 'open' THEN current_balance ELSE 0 END),0) AS active_balance,
+                COALESCE(SUM(CASE WHEN status = 'open' THEN GREATEST(current_balance,0) ELSE 0 END),0) AS active_cash,
                 COALESCE(SUM(total_personal_advance),0) AS total_advance,
                 COALESCE(SUM(total_received),0) AS total_received
             FROM operational_funds")->fetch(PDO::FETCH_ASSOC) ?: [];
         return [
             'open_count' => (int)($row['open_count'] ?? 0),
             'active_balance' => (float)($row['active_balance'] ?? 0),
+            'active_cash' => (float)($row['active_cash'] ?? 0),
             'total_advance' => (float)($row['total_advance'] ?? 0),
             'total_received' => (float)($row['total_received'] ?? 0),
         ];

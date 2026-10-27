@@ -15,6 +15,7 @@
 ob_start();
 
 require_once __DIR__ . '/../../includes/auth.php';
+require_permission('operations.view');
 require_once __DIR__ . '/analytics_helper.php';
 
 $data = hr_build_analytics($pdo, $_GET);

@@ -48,6 +48,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     }
     $due_date = $_POST['due_date'] ?? '';
     $notes = clean_input($_POST['notes'] ?? '');
+    $posting_mode = finance_normalize_posting_mode($_POST['posting_mode'] ?? 'posted', true);
+    $historical_reason = $posting_mode === 'posted' ? null : trim((string)($_POST['historical_reason'] ?? ''));
+    $historical_paid_date = $_POST['historical_paid_date'] ?? '';
+    $historical_received_amount = parse_amount_id($_POST['historical_received_amount'] ?? 0);
+    $historical_tax_amount = 0;
+    $historical_tax_percentage = 0;
 
     if ($term_name === '') {
         $error = 'Nama termin wajib diisi.';
@@ -55,15 +61,30 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $error = 'Jumlah tagihan harus lebih dari 0.';
     } elseif ($due_date === '') {
         $error = 'Tanggal jatuh tempo wajib diisi.';
+    } elseif ($posting_mode === 'historical' && $historical_paid_date === '') {
+        $error = 'Tanggal pembayaran historis wajib diisi.';
+    } elseif ($posting_mode === 'historical' && $historical_received_amount <= 0) {
+        $error = 'Nominal bersih historis wajib lebih dari nol.';
+    } elseif ($posting_mode === 'historical' && $historical_received_amount > $amount) {
+        $error = 'Nominal bersih historis tidak boleh melebihi nilai termin.';
+    } elseif ($posting_mode !== 'posted' && !finance_user_can_use_non_posting()) {
+        $error = 'Hanya admin atau super-admin yang boleh mencatat data historis/saldo awal.';
+    } elseif ($posting_mode !== 'posted' && $historical_reason === '') {
+        $error = 'Alasan pencatatan historis/saldo awal wajib diisi.';
     } else {
         try {
+            $posting_mode = finance_validate_posting_mode($posting_mode, $historical_reason, true);
+            if ($posting_mode === 'historical') {
+                $historical_tax_amount = max(0, $amount - $historical_received_amount);
+                $historical_tax_percentage = $amount > 0 ? round($historical_tax_amount / $amount * 100, 2) : 0;
+            }
             $pdo->beginTransaction();
 
             $stmt = $pdo->prepare("
                 INSERT INTO project_payment_terms
-                (project_id, term_name, percentage, amount, pic_employee_id, pic_name, due_date, status, notes)
+                (project_id, term_name, percentage, amount, tax_percentage, tax_amount, received_amount, pic_employee_id, pic_name, due_date, paid_date, status, posting_mode, historical_reason, notes)
                 VALUES
-                (:project_id, :term_name, :percentage, :amount, :pic_employee_id, :pic_name, :due_date, 'unpaid', :notes)
+                (:project_id, :term_name, :percentage, :amount, :tax_percentage, :tax_amount, :received_amount, :pic_employee_id, :pic_name, :due_date, :paid_date, :status, :posting_mode, :historical_reason, :notes)
             ");
 
             $stmt->execute([
@@ -71,9 +92,16 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 ':term_name' => $term_name,
                 ':percentage' => $percentage,
                 ':amount' => $amount,
+                ':tax_percentage' => $posting_mode === 'historical' ? $historical_tax_percentage : 0,
+                ':tax_amount' => $posting_mode === 'historical' ? $historical_tax_amount : 0,
+                ':received_amount' => $posting_mode === 'historical' ? $historical_received_amount : 0,
                 ':pic_employee_id' => $pic_employee_id,
                 ':pic_name' => $pic_name ?: null,
                 ':due_date' => $due_date,
+                ':paid_date' => $posting_mode === 'historical' ? $historical_paid_date : null,
+                ':status' => $posting_mode === 'historical' ? 'paid' : 'unpaid',
+                ':posting_mode' => $posting_mode,
+                ':historical_reason' => $historical_reason,
                 ':notes' => $notes ?: null
             ]);
 
@@ -81,6 +109,26 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
             // Integrasi finance: setiap termin otomatis menjadi Piutang.
             finance_sync_project_term_receivable($pdo, $term_id, $_SESSION['user_id'] ?? null);
+
+            if ($posting_mode === 'historical') {
+                $projectTrx = $pdo->prepare("INSERT INTO project_transactions
+                    (project_id, transaction_date, transaction_type, funding_source, account_id, payment_method, category, description, amount, posting_mode, historical_reason, source_module, source_id)
+                    VALUES (:project_id, :transaction_date, 'income', 'company', NULL, 'other', 'Termin Pembayaran', :description, :amount, 'historical', :historical_reason, 'term', :source_id)");
+                $projectTrx->execute([
+                    ':project_id' => $project_id,
+                    ':transaction_date' => $historical_paid_date,
+                    ':description' => 'Pembayaran historis ' . $term_name,
+                    ':amount' => $historical_received_amount,
+                    ':historical_reason' => $historical_reason,
+                    ':source_id' => $term_id,
+                ]);
+                $projectTransactionId = (int)$pdo->lastInsertId();
+                $pdo->prepare("UPDATE project_payment_terms SET transaction_id = :transaction_id WHERE id = :id")
+                    ->execute([':transaction_id' => $projectTransactionId, ':id' => $term_id]);
+                finance_mark_project_term_paid($pdo, $term_id, $historical_paid_date, null, 'other', null, $_SESSION['user_id'] ?? null);
+            }
+
+            log_activity($pdo, 'Project Termin', 'CREATE', finance_posting_mode_label($posting_mode) . ($historical_reason ? ' — ' . $historical_reason : ''), $term_id, 'project_payment_terms');
 
             $pdo->commit();
 
@@ -172,6 +220,37 @@ require_once __DIR__ . '/../../includes/sidebar.php';
                         <label class="form-label fw-semibold">Tanggal Jatuh Tempo</label>
                         <input type="date" name="due_date" class="form-control" required>
                     </div>
+                    <?php if (finance_user_can_use_non_posting()): ?>
+                    <div class="col-md-12">
+                        <label class="form-label fw-semibold">Dampak Saldo</label>
+                        <select name="posting_mode" id="posting_mode" class="form-select" onchange="togglePostingMode()">
+                            <option value="posted">Transaksi berjalan — pembayaran nanti menambah saldo</option>
+                            <option value="historical">Historis sudah dibayar — tidak memengaruhi saldo</option>
+                            <option value="opening_outstanding">Piutang awal masih terbuka — pembayaran nanti menambah saldo</option>
+                        </select>
+                        <small class="text-muted">Pilih historis hanya jika penerimaan sudah termasuk dalam saldo riil perusahaan.</small>
+                    </div>
+                    <div class="col-md-6 d-none" id="historical_paid_date_box">
+                        <label class="form-label fw-semibold">Tanggal Pembayaran Historis</label>
+                        <input type="date" name="historical_paid_date" class="form-control" disabled>
+                    </div>
+                    <div class="col-md-6 d-none" id="historical_received_amount_box">
+                        <label class="form-label fw-semibold">Nominal Bersih Diterima (Historis)</label>
+                        <input type="text" name="historical_received_amount" id="historical_received_amount" class="form-control currency-input" disabled>
+                        <small class="text-muted">Isi nominal setelah potongan pajak.</small>
+                    </div>
+                    <div class="col-md-6 d-none" id="historical_tax_preview_box">
+                        <div class="alert alert-warning rounded-4 mb-0 h-100">
+                            <span class="small">Potongan pajak historis</span>
+                            <div class="fw-bold fs-5" id="historical_tax_preview">Rp 0</div>
+                            <small id="historical_tax_percent_preview">0%</small>
+                        </div>
+                    </div>
+                    <div class="col-md-12 d-none" id="historical_reason_box">
+                        <label class="form-label fw-semibold">Alasan / Referensi Migrasi</label>
+                        <textarea name="historical_reason" class="form-control" rows="2" placeholder="Contoh: Sudah diterima sebelum saldo awal sistem ditetapkan"></textarea>
+                    </div>
+                    <?php endif; ?>
                     <div class="col-md-6"><label class="form-label fw-semibold">PIC Penerima Termin</label><select name="pic_employee_id" class="form-select"><option value="">PIC di luar daftar karyawan</option><?php foreach($employees as $employee): ?><option value="<?= (int)$employee['id']; ?>"><?= htmlspecialchars($employee['full_name']); ?></option><?php endforeach; ?></select></div>
                     <div class="col-md-6"><label class="form-label fw-semibold">Nama PIC / Kontak</label><input type="text" name="pic_name" class="form-control" placeholder="Nama orang yang menerima/menangani termin"></div>
 
@@ -235,9 +314,55 @@ require_once __DIR__ . '/../../includes/sidebar.php';
 <script>
     const contractValue = <?= (float) $project['contract_value']; ?>;
 
+    function togglePostingMode() {
+        const field = document.getElementById('posting_mode');
+        if (!field) return;
+        const historical = field.value === 'historical';
+        const nonPosted = field.value !== 'posted';
+        const paidDateBox = document.getElementById('historical_paid_date_box');
+        const receivedBox = document.getElementById('historical_received_amount_box');
+        const taxBox = document.getElementById('historical_tax_preview_box');
+        paidDateBox.classList.toggle('d-none', !historical);
+        receivedBox.classList.toggle('d-none', !historical);
+        taxBox.classList.toggle('d-none', !historical);
+        document.getElementById('historical_reason_box').classList.toggle('d-none', !nonPosted);
+        const paidDate = document.querySelector('[name="historical_paid_date"]');
+        const receivedAmount = document.getElementById('historical_received_amount');
+        paidDate.disabled = !historical;
+        paidDate.required = historical;
+        receivedAmount.disabled = !historical;
+        receivedAmount.required = historical;
+        document.querySelector('[name="historical_reason"]').required = nonPosted;
+        refreshHistoricalTax(historical);
+    }
+
     function cleanNumber(value) {
         return value.replace(/[^0-9]/g, '');
     }
+
+    function refreshHistoricalTax(useGrossAsDefault = false) {
+        const amountField = document.getElementById('amount');
+        const receivedField = document.getElementById('historical_received_amount');
+        if (!amountField || !receivedField) return;
+        const gross = Number(cleanNumber(amountField.value)) || 0;
+        let received = Number(cleanNumber(receivedField.value)) || 0;
+        if (useGrossAsDefault && receivedField.dataset.autoGross === '1' && gross > 0) {
+            received = gross;
+            receivedField.value = new Intl.NumberFormat('id-ID').format(gross);
+        }
+        const tax = Math.max(0, gross - Math.min(gross, received));
+        const percentage = gross > 0 ? tax / gross * 100 : 0;
+        document.getElementById('historical_tax_preview').textContent = 'Rp ' + new Intl.NumberFormat('id-ID').format(tax);
+        document.getElementById('historical_tax_percent_preview').textContent = percentage.toFixed(2).replace('.', ',') + '%';
+    }
+
+    const historicalReceivedInput = document.getElementById('historical_received_amount');
+    if (historicalReceivedInput) historicalReceivedInput.dataset.autoGross = historicalReceivedInput.value.trim() === '' ? '1' : '0';
+    historicalReceivedInput?.addEventListener('input', function () {
+        this.dataset.autoGross = '0';
+        refreshHistoricalTax();
+    });
+    togglePostingMode();
 
     function calculateAmountFromPercentage() {
         const percentageInput = document.getElementById('percentage');
@@ -251,6 +376,7 @@ require_once __DIR__ . '/../../includes/sidebar.php';
 
             amountHidden.value = amount;
             amountDisplay.value = 'Rp ' + new Intl.NumberFormat('id-ID').format(amount);
+            refreshHistoricalTax(document.getElementById('posting_mode')?.value === 'historical');
         }
     }
 
@@ -264,6 +390,7 @@ require_once __DIR__ . '/../../includes/sidebar.php';
         if (rawAmount === '') {
             amountHidden.value = '';
             percentageInput.value = '';
+            refreshHistoricalTax();
             return;
         }
 
@@ -273,6 +400,7 @@ require_once __DIR__ . '/../../includes/sidebar.php';
             const percentage = (parseFloat(rawAmount) / contractValue) * 100;
             percentageInput.value = percentage.toFixed(2);
         }
+        refreshHistoricalTax(document.getElementById('posting_mode')?.value === 'historical');
     }
 </script>
 

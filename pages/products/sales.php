@@ -1,6 +1,7 @@
 <?php
 require_once __DIR__ . '/../../includes/auth.php';
 require_once __DIR__ . '/product_helpers.php';
+require_once __DIR__ . '/../../includes/finance_helper.php';
 
 $pageTitle = 'Penjualan Produk - Nukari';
 
@@ -56,8 +57,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && $action === 'delete') {
 
         // Hapus transaksi keuangan yang dibuat otomatis oleh penjualan ini.
         if (!empty($sale['transaction_id'])) {
+            $accountStmt = $pdo->prepare("SELECT account_id FROM transactions WHERE id=? LIMIT 1");
+            $accountStmt->execute([(int)$sale['transaction_id']]);
+            $deletedAccountId = (int)$accountStmt->fetchColumn();
             $pdo->prepare("DELETE FROM transactions WHERE id = ?")
                 ->execute([(int)$sale['transaction_id']]);
+            if ($deletedAccountId > 0) finance_recalculate_account_balance($pdo, $deletedAccountId);
         }
 
         $pdo->prepare("DELETE FROM product_sales WHERE id = ?")->execute([$saleId]);
@@ -84,12 +89,17 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && $action === 'create') {
     $saleDate = $_POST['sale_date'] ?? date('Y-m-d');
     $channel = $_POST['channel'] ?? 'offline';
     $payment = $_POST['payment_method'] ?? 'cash';
+    $accountId = (int)($_POST['account_id'] ?? 0);
 
     try {
+        $postingMode = finance_validate_posting_mode($_POST['posting_mode'] ?? 'posted', $_POST['historical_reason'] ?? null);
+        $historicalReason = $postingMode === 'historical' ? trim((string)($_POST['historical_reason'] ?? '')) : null;
         if ($pid <= 0) throw new Exception('Produk wajib dipilih.');
         if ($qty <= 0) throw new Exception('Qty penjualan harus lebih dari 0.');
         if ($unit < 0) throw new Exception('Harga/unit tidak valid.');
         if ($fee < 0 || $ship < 0) throw new Exception('Fee marketplace dan ongkir tidak boleh minus.');
+        if ($postingMode === 'posted' && $accountId <= 0) throw new Exception('Pilih akun kas/bank penerima penjualan.');
+        finance_validate_posting_date($pdo, $saleDate, $postingMode);
 
         $pdo->beginTransaction();
 
@@ -124,19 +134,26 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && $action === 'create') {
         $description = 'Penjualan produk: ' . $prod['product_name'] . ' (' . sale_channel_label($channel) . ')';
         $stmt = $pdo->prepare("
             INSERT INTO transactions
-                (transaction_code, transaction_date, type, amount, description, payment_method, created_by, created_at)
+                (transaction_code, transaction_date, type, account_id, amount, posting_mode, historical_reason, posted_at, posted_by, description, payment_method, created_by, created_at)
             VALUES
-                (?, ?, 'income', ?, ?, ?, ?, NOW())
+                (?, ?, 'income', ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW())
         ");
         $stmt->execute([
             product_code('TRX'),
             $saleDate,
+            $accountId ?: null,
             $net,
+            $postingMode,
+            $historicalReason,
+            $postingMode === 'posted' ? date('Y-m-d H:i:s') : null,
+            $postingMode === 'posted' ? $userId : null,
             $description,
             $trxPayment,
             $userId
         ]);
         $trxId = (int)$pdo->lastInsertId();
+        if ($accountId) finance_recalculate_account_balance($pdo, $accountId);
+        log_activity($pdo, 'Product Sale', 'CREATE', finance_posting_mode_label($postingMode) . ($historicalReason ? ' — ' . $historicalReason : ''), $trxId, 'transactions');
 
         $stmt = $pdo->prepare("
             INSERT INTO product_sales
@@ -246,6 +263,7 @@ $products = $pdo->query("
     WHERE status = 'active'
     ORDER BY product_name
 ")->fetchAll(PDO::FETCH_ASSOC);
+$financeAccounts = $pdo->query("SELECT id,account_name,current_balance FROM finance_accounts WHERE status='active' ORDER BY is_default DESC,account_name")->fetchAll(PDO::FETCH_ASSOC);
 
 $where = [];
 $params = [];
@@ -415,6 +433,8 @@ require_once __DIR__ . '/_style.php';
                                 <option value="other">Lainnya</option>
                             </select>
                         </div>
+                        <div class="col-12"><label class="form-label">Akun Penerima</label><select name="account_id" class="form-select"><option value="">Pilih kas/bank</option><?php foreach($financeAccounts as $account): ?><option value="<?= (int)$account['id']; ?>"><?= product_safe($account['account_name']); ?> · <?= product_money($account['current_balance']); ?></option><?php endforeach; ?></select><small class="text-muted">Wajib untuk penjualan berjalan.</small></div>
+                        <?php if (finance_user_can_use_non_posting()): ?><div class="col-12"><label class="form-label">Dampak Saldo</label><select name="posting_mode" id="postingMode" class="form-select"><option value="posted">Penjualan berjalan — memengaruhi keuangan</option><option value="historical">Penjualan historis — tidak memengaruhi saldo</option></select></div><div class="col-12 d-none" id="historicalReasonField"><label class="form-label">Alasan / Referensi Historis</label><textarea name="historical_reason" class="form-control" rows="2"></textarea></div><?php endif; ?>
 
                         <div class="col-12">
                             <div class="sales-result-box">
@@ -732,6 +752,9 @@ require_once __DIR__ . '/_style.php';
 
     autoSetPrice();
 })();
+const postingMode=document.getElementById('postingMode');
+function syncPostingMode(){if(!postingMode)return;const historical=postingMode.value==='historical';document.getElementById('historicalReasonField').classList.toggle('d-none',!historical);document.querySelector('[name="historical_reason"]').required=historical;}
+postingMode?.addEventListener('change',syncPostingMode);syncPostingMode();
 </script>
 
 <?php require_once __DIR__ . '/../../includes/footer.php'; ?>

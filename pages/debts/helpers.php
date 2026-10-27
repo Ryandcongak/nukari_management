@@ -14,33 +14,16 @@ if (!function_exists('debt_money_to_number')) {
 }
 
 if (!function_exists('debt_upload_file')) {
-    function debt_upload_file($field)
+    function debt_upload_file($field, $oldFile = null)
     {
-        if (empty($_FILES[$field]['name']) || $_FILES[$field]['error'] !== UPLOAD_ERR_OK) {
-            return null;
-        }
+        $uploaded = upload_store_file(
+            $_FILES[$field] ?? [],
+            'debts',
+            'debt',
+            upload_document_mimes()
+        );
 
-        $allowed = ['jpg', 'jpeg', 'png', 'webp', 'pdf'];
-        $ext = strtolower(pathinfo($_FILES[$field]['name'], PATHINFO_EXTENSION));
-
-        if (!in_array($ext, $allowed, true)) {
-            throw new Exception('File bukti hanya boleh JPG, PNG, WEBP, atau PDF.');
-        }
-        validate_upload($_FILES[$field], ['image/jpeg','image/png','image/webp','application/pdf']);
-
-        $dir = __DIR__ . '/../../uploads/debts/';
-        if (!is_dir($dir)) {
-            mkdir($dir, 0775, true);
-        }
-
-        $filename = 'debt_payment_' . date('YmdHis') . '_' . bin2hex(random_bytes(4)) . '.' . $ext;
-        $target = $dir . $filename;
-
-        if (!move_uploaded_file($_FILES[$field]['tmp_name'], $target)) {
-            throw new Exception('Gagal upload file bukti.');
-        }
-
-        return 'uploads/debts/' . $filename;
+        return $uploaded ?? $oldFile;
     }
 }
 

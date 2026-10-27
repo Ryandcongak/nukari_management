@@ -39,6 +39,8 @@ $stmt = $pdo->prepare("
         rp.id,
         rp.payment_date,
         rp.amount,
+        rp.posting_mode,
+        rp.historical_reason,
         rp.payment_method,
         rp.proof_file,
         rp.notes,
@@ -60,6 +62,8 @@ if (!empty($r['debt_id'])) {
             dp.id,
             dp.payment_date,
             dp.amount,
+            dp.posting_mode,
+            dp.historical_reason,
             dp.payment_method,
             dp.proof_file,
             dp.notes,
@@ -194,12 +198,13 @@ require_once __DIR__ . '/../../includes/sidebar.php';
                                     <td class="fw-semibold"><?= rupiah($p['amount']); ?></td>
                                     <td><?= rmb_payment_method_label($p['payment_method']); ?></td>
                                     <td>
+                                        <?php if (($p['posting_mode'] ?? 'posted') === 'historical'): ?><span class="badge rounded-pill bg-secondary">Historis · tanpa saldo</span><?php else: ?><span class="badge rounded-pill bg-success">Terposting</span><?php endif; ?><br>
                                         <?php if (!empty($p['transaction_id'])): ?>
-                                            <span class="badge rounded-pill bg-success">Tercatat</span>
                                             <div class="small text-muted"><?= rmb_e($p['transaction_code'] ?: ('#' . $p['transaction_id'])); ?></div>
                                         <?php else: ?>
                                             <span class="badge rounded-pill bg-warning text-dark">Belum</span>
                                         <?php endif; ?>
+                                        <?php if (!empty($p['historical_reason'])): ?><div class="small text-muted"><?= rmb_e($p['historical_reason']); ?></div><?php endif; ?>
                                     </td>
                                     <td>
                                         <?php if (($p['payment_source'] ?? '') === 'debt'): ?>

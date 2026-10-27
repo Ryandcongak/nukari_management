@@ -22,11 +22,23 @@ function report_sum(array $rows, string $column): float
 }
 
 $finance = nr_report($pdo, 'finance', $from, $to);
-$financeSource = $pdo->query("SELECT COUNT(*) row_count,COALESCE(SUM(CASE WHEN type='income' THEN amount ELSE 0 END),0) income,COALESCE(SUM(CASE WHEN type='expense' THEN amount ELSE 0 END),0) expense FROM transactions WHERE transaction_date BETWEEN '2000-01-01' AND '2099-12-31'")->fetch(PDO::FETCH_ASSOC);
-report_assert_close($failures, 'finance.rows', count($finance['raw']), (float)$financeSource['row_count']);
-report_assert_close($failures, 'finance.income', report_sum(array_filter($finance['raw'], fn($row) => $row['type'] === 'income'), 'amount'), (float)$financeSource['income']);
-report_assert_close($failures, 'finance.expense', report_sum(array_filter($finance['raw'], fn($row) => $row['type'] === 'expense'), 'amount'), (float)$financeSource['expense']);
-$results['finance'] = ['rows' => count($finance['raw']), 'income' => (float)$financeSource['income'], 'expense' => (float)$financeSource['expense']];
+$financeSource = $pdo->query("SELECT COUNT(*) row_count,COALESCE(SUM(CASE WHEN type='income' THEN amount ELSE 0 END),0) income,COALESCE(SUM(CASE WHEN type='expense' THEN amount ELSE 0 END),0) expense FROM transactions WHERE posting_mode='posted' AND account_id IS NOT NULL AND transaction_date BETWEEN '2000-01-01' AND '2099-12-31'")->fetch(PDO::FETCH_ASSOC);
+$fundFlowSource = $pdo->query("SELECT COUNT(*) row_count,COALESCE(SUM(CASE WHEN movement_type='adjustment' THEN amount ELSE 0 END),0) income,COALESCE(SUM(CASE WHEN movement_type='expense' THEN amount ELSE 0 END),0) expense FROM operational_fund_movements WHERE posting_mode='posted' AND movement_type IN ('expense','adjustment') AND movement_date BETWEEN '2000-01-01' AND '2099-12-31'")->fetch(PDO::FETCH_ASSOC);
+$expectedFinanceRows=(float)$financeSource['row_count']+(float)$fundFlowSource['row_count'];
+$expectedFinanceIncome=(float)$financeSource['income']+(float)$fundFlowSource['income'];
+$expectedFinanceExpense=(float)$financeSource['expense']+(float)$fundFlowSource['expense'];
+report_assert_close($failures, 'finance.rows', count($finance['raw']), $expectedFinanceRows);
+report_assert_close($failures, 'finance.income', report_sum(array_filter($finance['raw'], fn($row) => $row['type'] === 'income'), 'amount'), $expectedFinanceIncome);
+report_assert_close($failures, 'finance.expense', report_sum(array_filter($finance['raw'], fn($row) => $row['type'] === 'expense'), 'amount'), $expectedFinanceExpense);
+if (empty($finance['finance'])) {
+    $failures[]=['metric'=>'finance.position','message'=>'Ringkasan posisi uang tidak tersedia.'];
+} else {
+    $storedCentral=(float)$pdo->query("SELECT COALESCE(SUM(current_balance),0) FROM finance_accounts WHERE status='active'")->fetchColumn();
+    $storedPic=(float)$pdo->query("SELECT COALESCE(SUM(GREATEST(current_balance,0)),0) FROM operational_funds WHERE status<>'cancelled'")->fetchColumn();
+    report_assert_close($failures,'finance.central_cash',$finance['finance']['ending']['central_cash'],$storedCentral);
+    report_assert_close($failures,'finance.pic_cash',$finance['finance']['ending']['pic_cash'],$storedPic);
+}
+$results['finance'] = ['rows' => count($finance['raw']), 'income' => $expectedFinanceIncome, 'expense' => $expectedFinanceExpense, 'total_cash'=>(float)($finance['finance']['ending']['total_cash']??0)];
 
 $projects = nr_report($pdo, 'projects', $from, $to);
 $projectSource = $pdo->query("SELECT COUNT(*) row_count,COALESCE(SUM(contract_value),0) contracts FROM projects WHERE (start_date IS NULL OR start_date<='2099-12-31') AND (end_date IS NULL OR end_date>='2000-01-01')")->fetch(PDO::FETCH_ASSOC);

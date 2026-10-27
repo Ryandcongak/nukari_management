@@ -92,7 +92,7 @@ if (!function_exists('nukari_priority_badge')) {
 $allNotifications = [];
 $totalNotifications = 0;
 
-if (isset($pdo)) {
+if (isset($pdo) && has_permission('notifications.view')) {
     try {
         /*
         |------------------------------------------------------------------
@@ -548,6 +548,12 @@ if (isset($pdo)) {
             background: #f9fafb;
         }
 
+        .notification-item-readonly,
+        .notification-item-readonly:hover {
+            cursor: default;
+            background: #ffffff;
+        }
+
         .notification-icon {
             width: 38px;
             height: 38px;
@@ -631,6 +637,47 @@ if (isset($pdo)) {
             font-size: 30px;
             font-weight: 800;
             margin-top: 8px;
+        }
+
+        .nukari-card-help {
+            display: inline-grid;
+            place-items: center;
+            width: 28px;
+            height: 28px;
+            padding: 0;
+            margin-left: 6px;
+            vertical-align: -8px;
+            border: 1px solid rgba(31, 122, 77, 0.22);
+            border-radius: 50%;
+            background: rgba(31, 122, 77, 0.08);
+            color: #1f7a4d;
+            font-size: 12px;
+            line-height: 1;
+            cursor: help;
+            transition: transform .18s ease, background-color .18s ease, box-shadow .18s ease;
+        }
+
+        .nukari-card-help:hover,
+        .nukari-card-help:focus-visible {
+            background: #1f7a4d;
+            color: #fff;
+            outline: 0;
+            transform: scale(1.08);
+            box-shadow: 0 5px 12px rgba(31, 122, 77, 0.2);
+        }
+
+        .nukari-global-tooltip .tooltip-inner {
+            max-width: 310px;
+            padding: 10px 12px;
+            border-radius: 10px;
+            text-align: left;
+            line-height: 1.45;
+            box-shadow: 0 8px 24px rgba(0, 0, 0, 0.16);
+        }
+
+        [data-nukari-tooltip="1"]:focus-visible {
+            outline: 2px solid rgba(31, 122, 77, 0.45);
+            outline-offset: 2px;
         }
 
         .panel {
@@ -845,6 +892,7 @@ if (isset($pdo)) {
             .nukari-floating-actions { right: 14px; bottom: 14px; }
             .floating-action-btn { width: 48px; height: 48px; }
             .report-summary .stat-card { min-height: 112px; }
+            .nukari-card-help { width: 32px; height: 32px; vertical-align: -10px; }
         }
 
         @media (max-width: 420px) {
@@ -931,7 +979,8 @@ if (isset($pdo)) {
             .sidebar,
             .sidebar-backdrop,
             .main-content,
-            .nukari-topbar {
+            .nukari-topbar,
+            .nukari-card-help {
                 transition: none !important;
             }
         }
@@ -939,7 +988,7 @@ if (isset($pdo)) {
         @media print {
             @page { size: A4 landscape; margin: 10mm; }
             body { background: #fff !important; color: #111 !important; font-size: 10pt; }
-            .sidebar, .nukari-topbar, .nukari-floating-actions, .report-filter, .report-actions, footer { display: none !important; }
+            .sidebar, .nukari-topbar, .nukari-floating-actions, .report-filter, .report-actions, .nukari-card-help, .tooltip, footer { display: none !important; }
             .main-content { margin: 0 !important; padding: 0 !important; width: 100% !important; }
             .page-header, .panel, .stat-card { box-shadow: none !important; border: 1px solid #d1d5db; }
             .report-header { padding: 12px 14px; margin-bottom: 8px; }
@@ -1010,6 +1059,7 @@ if (isset($pdo)) {
         </div>
 
         <div class="d-flex align-items-center gap-2">
+            <?php if (has_permission('notifications.view')): ?>
             <div class="dropdown">
                 <button
                     class="topbar-icon-btn position-relative"
@@ -1042,9 +1092,14 @@ if (isset($pdo)) {
                             $daysLeft = (int) $notif['days_left'];
                             $badgeClass = nukari_priority_badge($daysLeft, $notif['priority']);
                             $linkUrl = $notif['link_url'] ?: '#';
+                            $notificationLinksEnabled = has_permission('operations.view');
                             ?>
 
-                            <a href="<?= htmlspecialchars($linkUrl); ?>" class="notification-item">
+                            <?php if ($notificationLinksEnabled): ?>
+                                <a href="<?= htmlspecialchars($linkUrl); ?>" class="notification-item">
+                            <?php else: ?>
+                                <div class="notification-item notification-item-readonly" aria-disabled="true">
+                            <?php endif; ?>
                                 <div class="d-flex gap-3">
                                     <div class="notification-icon">
                                         <i class="bi <?= htmlspecialchars($notif['icon']); ?>"></i>
@@ -1077,7 +1132,11 @@ if (isset($pdo)) {
                                         </div>
                                     </div>
                                 </div>
-                            </a>
+                            <?php if ($notificationLinksEnabled): ?>
+                                </a>
+                            <?php else: ?>
+                                </div>
+                            <?php endif; ?>
                         <?php endforeach; ?>
                     <?php else: ?>
                         <div class="notification-empty">
@@ -1087,6 +1146,7 @@ if (isset($pdo)) {
                     <?php endif; ?>
                 </div>
             </div>
+            <?php endif; ?>
         </div>
     </div>
 

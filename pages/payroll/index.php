@@ -1214,8 +1214,7 @@ require_once __DIR__ . '/../../includes/sidebar.php';
 
                                         <?php if ($row['status'] !== 'paid'): ?>
                                             <a href="<?= base_url('pages/payroll/pay.php?id=' . $row['id']); ?>"
-                                                class="btn btn-sm btn-success"
-                                                onclick="return confirm('Tandai payroll ini sebagai PAID?');">
+                                                class="btn btn-sm btn-success">
                                                 Paid
                                             </a>
                                         <?php endif; ?>

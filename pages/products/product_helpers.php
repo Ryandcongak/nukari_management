@@ -97,16 +97,11 @@ if (!function_exists('product_update_product_profit')) {
 }
 if (!function_exists('product_upload_acquisition_proof')) {
     function product_upload_acquisition_proof(string $field): ?string {
-        if (empty($_FILES[$field]['name']) || ($_FILES[$field]['error'] ?? UPLOAD_ERR_NO_FILE) === UPLOAD_ERR_NO_FILE) return null;
-        if (($_FILES[$field]['error'] ?? UPLOAD_ERR_OK) !== UPLOAD_ERR_OK) throw new Exception('Bukti perolehan bahan gagal diunggah.');
-        validate_upload($_FILES[$field], ['image/jpeg','image/png','image/webp','application/pdf']);
-        $mime=(new finfo(FILEINFO_MIME_TYPE))->file($_FILES[$field]['tmp_name']);
-        $ext=['image/jpeg'=>'jpg','image/png'=>'png','image/webp'=>'webp','application/pdf'=>'pdf'][$mime]??null;
-        if(!$ext)throw new Exception('Bukti hanya boleh JPG, PNG, WEBP, atau PDF.');
-        $dir=__DIR__.'/../../uploads/material_acquisitions/';
-        if(!is_dir($dir)&&!mkdir($dir,0775,true)&&!is_dir($dir))throw new Exception('Folder bukti bahan tidak dapat dibuat.');
-        $name='material_'.date('YmdHis').'_'.bin2hex(random_bytes(4)).'.'.$ext;
-        if(!move_uploaded_file($_FILES[$field]['tmp_name'],$dir.$name))throw new Exception('Bukti perolehan bahan gagal disimpan.');
-        return 'uploads/material_acquisitions/'.$name;
+        return upload_store_file(
+            $_FILES[$field] ?? [],
+            'material_acquisitions',
+            'material',
+            upload_document_mimes()
+        );
     }
 }

@@ -28,38 +28,20 @@ function ensure_project_fund_receipts_table(PDO $pdo): void
     if (!project_fund_table_exists($pdo, 'project_fund_receipts')) throw new RuntimeException('Migrasi database project_fund_receipts belum dijalankan.');
 }
 
-function upload_project_fund_receipts_page($files, int $fundId, PDO $pdo): int
+function upload_project_fund_receipts_page($files, int $fundId, PDO $pdo, ?array &$storedPaths = null): int
 {
     if ($fundId <= 0 || !isset($files) || empty($files['name'][0])) return 0;
     ensure_project_fund_receipts_table($pdo);
-
-    $uploadDir = __DIR__ . '/../../uploads/project_funds/';
-    if (!is_dir($uploadDir)) mkdir($uploadDir, 0777, true);
-
-    $allowedExt = ['jpg', 'jpeg', 'png', 'webp'];
-    $maxSize = 5 * 1024 * 1024;
-    $saved = 0;
-
-    foreach ($files['name'] as $key => $name) {
-        if (($files['error'][$key] ?? UPLOAD_ERR_NO_FILE) === UPLOAD_ERR_NO_FILE) continue;
-        if ($files['error'][$key] !== UPLOAD_ERR_OK) throw new Exception('Ada foto bukti pendanaan yang gagal diupload.');
-        if ($files['size'][$key] > $maxSize) throw new Exception('Ukuran setiap foto bukti pendanaan maksimal 5MB.');
-        $ext = strtolower(pathinfo((string) $name, PATHINFO_EXTENSION));
-        if (!in_array($ext, $allowedExt, true)) throw new Exception('Format bukti pendanaan harus JPG, JPEG, PNG, atau WEBP.');
-
-        $fileName = 'fund_' . $fundId . '_' . date('YmdHis') . '_' . bin2hex(random_bytes(4)) . '.' . $ext;
-        if (!move_uploaded_file($files['tmp_name'][$key], $uploadDir . $fileName)) {
-            throw new Exception('Gagal menyimpan foto bukti pendanaan.');
-        }
-
+    $paths = upload_store_multiple($files, 'project_funds', 'fund_' . $fundId, upload_image_mimes(), 5242880, 10);
+    $storedPaths = $paths;
+    try {
         $stmt = $pdo->prepare("INSERT INTO project_fund_receipts (fund_id, file_path) VALUES (:fund_id, :file_path)");
-        $stmt->execute([
-            ':fund_id' => $fundId,
-            ':file_path' => 'uploads/project_funds/' . $fileName
-        ]);
-        $saved++;
+        foreach ($paths as $path) $stmt->execute([':fund_id' => $fundId, ':file_path' => $path]);
+    } catch (Throwable $e) {
+        foreach ($paths as $path) upload_delete_file($path);
+        throw $e;
     }
-    return $saved;
+    return count($paths);
 }
 
 function fund_rp($value): string
@@ -91,6 +73,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     } elseif ($source_type === 'person' && $person_name === '') {
         $error = 'Nama lengkap personal wajib diisi.';
     } else {
+        $uploadedReceiptPaths = [];
         try {
             $pdo->beginTransaction();
             $stmt = $pdo->prepare("\n                INSERT INTO project_funds (project_id, source_type, person_name, amount, description)\n                VALUES (:project_id, :source_type, :person_name, :amount, :description)\n            ");
@@ -102,12 +85,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 ':description' => $description ?: null
             ]);
             $fundId = (int) $pdo->lastInsertId();
-            upload_project_fund_receipts_page($_FILES['receipt_images'] ?? null, $fundId, $pdo);
+            upload_project_fund_receipts_page($_FILES['receipt_images'] ?? null, $fundId, $pdo, $uploadedReceiptPaths);
             finance_sync_project_fund_transaction($pdo, $fundId, $_SESSION['user_id'] ?? null);
             $pdo->commit();
             redirect('pages/projects/detail.php?id=' . $project_id . '&tab=funds');
-        } catch (Exception $e) {
-            $pdo->rollBack();
+        } catch (Throwable $e) {
+            if ($pdo->inTransaction()) $pdo->rollBack();
+            foreach ($uploadedReceiptPaths as $path) upload_delete_file($path);
             $error = 'Gagal menyimpan pendanaan project: ' . $e->getMessage();
         }
     }

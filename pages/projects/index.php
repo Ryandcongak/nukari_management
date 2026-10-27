@@ -179,7 +179,16 @@ $stmt = $pdo->query("
         GROUP BY project_id
     ) w ON w.project_id = p.id
     WHERE p.deleted_at IS NULL
-    ORDER BY p.id DESC
+    ORDER BY
+        CASE p.status
+            WHEN 'ongoing' THEN 1
+            WHEN 'planning' THEN 2
+            WHEN 'completed' THEN 3
+            WHEN 'cancelled' THEN 4
+            ELSE 5
+        END ASC,
+        p.created_at DESC,
+        p.id DESC
 ");
 $projects = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
@@ -699,7 +708,7 @@ require_once __DIR__ . '/../../includes/sidebar.php';
                 <div class="d-flex justify-content-between align-items-center flex-wrap gap-2 mb-3">
                     <div>
                         <h5 class="fw-bold mb-1">Daftar Project</h5>
-                        <small class="text-muted">Gunakan pencarian untuk menemukan project, client, atau leader.</small>
+                        <small class="text-muted">Ongoing dan Planning ditampilkan lebih dahulu; Completed dan Cancelled menjadi arsip di bagian bawah. Di setiap status, input terbaru berada di atas.</small>
                     </div>
                     <input type="text" id="projectSearch" class="form-control search-box" style="max-width:280px;" placeholder="Cari project, client, leader...">
                 </div>
@@ -708,6 +717,7 @@ require_once __DIR__ . '/../../includes/sidebar.php';
                     <table class="table table-hover align-middle" id="projectTable">
                         <thead>
                             <tr>
+                                <th style="width:64px;">No.</th>
                                 <th>Project</th>
                                 <th>Client / Leader</th>
                                 <th>Timeline</th>
@@ -719,7 +729,7 @@ require_once __DIR__ . '/../../includes/sidebar.php';
                         </thead>
                         <tbody>
                             <?php if ($projects): ?>
-                                <?php foreach ($projects as $p): ?>
+                                <?php foreach ($projects as $projectIndex => $p): ?>
                                     <?php
                                     $termProgress = ((int) $p['total_terms'] > 0) ? (((int) $p['paid_terms'] / (int) $p['total_terms']) * 100) : 0;
                                     $rowRealIncome = (float) $p['paid_term_received'] + (float) ($p['manual_income'] ?? 0);
@@ -731,9 +741,11 @@ require_once __DIR__ . '/../../includes/sidebar.php';
                                     ?>
                                     <?php $rowClass=$p['status']==='completed'?'table-light':($rowCashPosition<0?'table-danger':($rowCashPosition>0?'table-success':'table-warning')); ?>
                                     <tr class="<?= $rowClass; ?>">
+                                        <td class="fw-semibold text-muted"><?= $projectIndex + 1; ?></td>
                                         <td>
                                             <div class="project-title"><?= htmlspecialchars($p['project_name']); ?></div>
                                             <div class="muted-small"><?= htmlspecialchars($p['project_code'] ?: 'Tanpa kode'); ?></div>
+                                            <div class="muted-small"><i class="bi bi-clock me-1"></i>Input <?= !empty($p['created_at']) ? date('d M Y H:i', strtotime($p['created_at'])) : '-'; ?></div>
                                             <?= nkr_type_badge($p['project_type'] ?? 'one_time'); ?>
                                             <?php if (($p['project_type'] ?? 'one_time') === 'ongoing'): ?>
                                                 <div class="muted-small mt-1">
@@ -779,7 +791,7 @@ require_once __DIR__ . '/../../includes/sidebar.php';
                                     </tr>
                                 <?php endforeach; ?>
                             <?php else: ?>
-                                <tr><td colspan="7" class="text-center text-muted py-5">Belum ada project. Klik Tambah Project untuk membuat data pertama.</td></tr>
+                                <tr><td colspan="8" class="text-center text-muted py-5">Belum ada project. Klik Tambah Project untuk membuat data pertama.</td></tr>
                             <?php endif; ?>
                         </tbody>
                     </table>

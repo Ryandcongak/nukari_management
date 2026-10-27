@@ -7,10 +7,15 @@ $pageTitle = 'Buku Kas - Nukari';
 $type = trim($_GET['type'] ?? '');
 $accountId = (int)($_GET['account_id'] ?? 0);
 $source = trim($_GET['source'] ?? '');
+$postingMode = trim($_GET['posting_mode'] ?? 'posted');
 $q = trim($_GET['q'] ?? '');
 
 $where = ["t.transaction_date BETWEEN :start AND :end"];
 $params = [':start' => $startDate, ':end' => $endDate];
+if (in_array($postingMode, ['posted','historical'], true)) {
+    $where[] = "t.posting_mode = :posting_mode";
+    $params[':posting_mode'] = $postingMode;
+}
 
 if ($type !== '') {
     $where[] = "t.type = :type";
@@ -134,6 +139,7 @@ require_once __DIR__ . '/../../includes/sidebar.php';
                     <?php endforeach; ?>
                 </select>
             </div>
+            <div class="col-lg-2 col-md-4"><select name="posting_mode" class="form-select"><option value="posted" <?= $postingMode==='posted'?'selected':''; ?>>Saldo aktual</option><option value="historical" <?= $postingMode==='historical'?'selected':''; ?>>Catatan historis</option><option value="all" <?= $postingMode==='all'?'selected':''; ?>>Semua dampak</option></select></div>
             <div class="col-lg-3 col-md-6"><input type="text" name="q" class="form-control" value="<?= f_e($q); ?>" placeholder="Cari referensi, kode sistem, deskripsi..."></div>
             <div class="col-lg-1 col-md-2 d-grid"><button class="btn btn-outline-success"><i class="bi bi-search"></i></button></div>
         </form>
@@ -171,7 +177,7 @@ require_once __DIR__ . '/../../includes/sidebar.php';
                             <td><?= f_e($t['category_name'] ?: '-'); ?></td>
                             <td><?= f_e($t['account_name'] ?: '-'); ?></td>
                             <td><?= f_e($t['project_name'] ?: '-'); ?></td>
-                            <td><?= f_e(f_source_label($t['source_module'])); ?></td>
+                            <td><?= f_e(f_source_label($t['source_module'])); ?><br><span class="badge <?= ($t['posting_mode']??'posted')==='historical'?'bg-secondary':'bg-success'; ?>"><?= ($t['posting_mode']??'posted')==='historical'?'Historis':'Aktual'; ?></span></td>
                             <td style="min-width:200px"><?= f_e(mb_strimwidth($t['description'] ?: '-', 0, 80, '...')); ?></td>
                             <td class="text-end fw-bold <?= $t['type'] === 'income' ? 'text-success' : 'text-danger'; ?>">
                                 <?= $t['type'] === 'income' ? '+' : '-'; ?> <?= rupiah($t['amount']); ?>

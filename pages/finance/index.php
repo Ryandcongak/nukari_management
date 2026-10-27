@@ -15,34 +15,25 @@ $accounts = $pdo->query("
 
 $accountTotal = $pdo->query("SELECT COALESCE(SUM(current_balance),0) FROM finance_accounts WHERE status='active'")->fetchColumn();
 
-$stmt = $pdo->prepare("
-    SELECT
-        COALESCE(SUM(CASE WHEN type='income' THEN amount ELSE 0 END),0) AS income_total,
-        COALESCE(SUM(CASE WHEN type='expense' THEN amount ELSE 0 END),0) AS expense_total
-    FROM transactions
-    WHERE transaction_date BETWEEN :start AND :end
-");
-$stmt->execute([':start' => $startDate, ':end' => $endDate]);
-$monthly = $stmt->fetch(PDO::FETCH_ASSOC);
-$profit = (float)$monthly['income_total'] - (float)$monthly['expense_total'];
+$cashFlowRows = finance_consolidated_cash_flow_rows($pdo, $startDate, $endDate);
+$monthly = finance_cash_flow_summary($cashFlowRows);
+$profit = (float)$monthly['net_cash_flow'];
 
-$activeReceivable = $pdo->query("SELECT COALESCE(SUM(amount - paid_amount),0) FROM debts WHERE type='receivable' AND status!='paid'")->fetchColumn();
-$activeDebt = $pdo->query("SELECT COALESCE(SUM(amount - paid_amount),0) FROM debts WHERE type='debt' AND status!='paid'")->fetchColumn();
+$activeReceivable = $pdo->query("SELECT COALESCE(SUM(amount - paid_amount),0) FROM debts WHERE type='receivable' AND status!='paid' AND posting_mode!='historical'")->fetchColumn();
+$activeDebt = $pdo->query("SELECT COALESCE(SUM(amount - paid_amount),0) FROM debts WHERE type='debt' AND status!='paid' AND posting_mode!='historical'")->fetchColumn();
 $activeReimbursement = $pdo->query("SELECT COALESCE(SUM(amount - paid_amount),0) FROM reimbursements WHERE status IN ('approved','partial')")->fetchColumn();
-$operationalFundSummary = function_exists('opfund_summary') ? opfund_summary($pdo) : ['active_balance' => 0, 'open_count' => 0];
+$operationalFundSummary = function_exists('opfund_summary') ? opfund_summary($pdo) : ['active_balance' => 0, 'active_cash' => 0, 'open_count' => 0];
+$companyCashTotal = (float)$accountTotal + (float)($operationalFundSummary['active_cash'] ?? max(0, (float)($operationalFundSummary['active_balance'] ?? 0)));
 
-$stmt = $pdo->prepare("
-    SELECT
-        DATE(transaction_date) AS trx_date,
-        COALESCE(SUM(CASE WHEN type='income' THEN amount ELSE 0 END),0) AS income_total,
-        COALESCE(SUM(CASE WHEN type='expense' THEN amount ELSE 0 END),0) AS expense_total
-    FROM transactions
-    WHERE transaction_date BETWEEN :start AND :end
-    GROUP BY DATE(transaction_date)
-    ORDER BY trx_date ASC
-");
-$stmt->execute([':start' => $startDate, ':end' => $endDate]);
-$dailyRows = $stmt->fetchAll(PDO::FETCH_ASSOC);
+$dailyMap = [];
+foreach ($cashFlowRows as $row) {
+    $date = (string)$row['transaction_date'];
+    if (!isset($dailyMap[$date])) $dailyMap[$date] = ['trx_date'=>$date,'income_total'=>0.0,'expense_total'=>0.0];
+    $key = $row['type']==='income' ? 'income_total' : 'expense_total';
+    $dailyMap[$date][$key] += (float)$row['amount'];
+}
+ksort($dailyMap);
+$dailyRows = array_values($dailyMap);
 
 $chartLabels = [];
 $chartIncome = [];
@@ -53,34 +44,16 @@ foreach ($dailyRows as $row) {
     $chartExpense[] = (float)$row['expense_total'];
 }
 
-$stmt = $pdo->prepare("
-    SELECT
-        t.*,
-        c.category_name,
-        a.account_name,
-        p.project_name
-    FROM transactions t
-    LEFT JOIN transaction_categories c ON c.id = t.category_id
-    LEFT JOIN finance_accounts a ON a.id = t.account_id
-    LEFT JOIN projects p ON p.id = t.project_id
-    WHERE t.transaction_date BETWEEN :start AND :end
-    ORDER BY t.transaction_date DESC, t.id DESC
-    LIMIT 12
-");
-$stmt->execute([':start' => $startDate, ':end' => $endDate]);
-$recentTransactions = $stmt->fetchAll(PDO::FETCH_ASSOC);
-
-$stmt = $pdo->prepare("
-    SELECT c.category_name, t.type, COALESCE(SUM(t.amount),0) AS total_amount
-    FROM transactions t
-    LEFT JOIN transaction_categories c ON c.id = t.category_id
-    WHERE t.transaction_date BETWEEN :start AND :end
-    GROUP BY t.type, c.category_name
-    ORDER BY total_amount DESC
-    LIMIT 8
-");
-$stmt->execute([':start' => $startDate, ':end' => $endDate]);
-$categorySummary = $stmt->fetchAll(PDO::FETCH_ASSOC);
+$recentTransactions = array_slice($cashFlowRows, 0, 12);
+$categoryMap = [];
+foreach ($cashFlowRows as $row) {
+    $category = trim((string)($row['category_name'] ?? '')) ?: 'Tanpa Kategori';
+    $key = $row['type'].'|'.$category;
+    if (!isset($categoryMap[$key])) $categoryMap[$key] = ['category_name'=>$category,'type'=>$row['type'],'total_amount'=>0.0];
+    $categoryMap[$key]['total_amount'] += (float)$row['amount'];
+}
+usort($categoryMap, static fn(array $a,array $b): int => $b['total_amount'] <=> $a['total_amount']);
+$categorySummary = array_slice(array_values($categoryMap), 0, 8);
 
 require_once __DIR__ . '/../../includes/header.php';
 require_once __DIR__ . '/../../includes/sidebar.php';
@@ -93,6 +66,7 @@ require_once __DIR__ . '/../../includes/sidebar.php';
             <p class="text-muted mb-0">Pusat kontrol kas, bank, transaksi, hutang, piutang, dan cash flow Nukari.</p>
         </div>
         <div class="d-flex gap-2 flex-wrap">
+            <a href="<?= base_url('pages/finance/settings.php'); ?>" class="btn btn-outline-secondary"><i class="bi bi-sliders me-1"></i> Saldo Awal</a>
             <a href="<?= base_url('pages/finance/transactions.php'); ?>" class="btn btn-outline-success">
                 <i class="bi bi-journal-text me-1"></i> Buku Kas
             </a>
@@ -132,9 +106,9 @@ require_once __DIR__ . '/../../includes/sidebar.php';
     <div class="row g-3 mb-4">
         <div class="col-xl-3 col-md-6">
             <div class="panel h-100">
-                <div class="text-muted small">Total Saldo Akun</div>
-                <div class="fs-4 fw-bold text-success"><?= rupiah($accountTotal); ?></div>
-                <small class="text-muted">Kas, bank, QRIS aktif</small>
+                <div class="text-muted small">Total Uang Perusahaan</div>
+                <div class="fs-4 fw-bold text-success"><?= rupiah($companyCashTotal); ?></div>
+                <small class="text-muted">Akun pusat + sisa Dana PIC</small>
             </div>
         </div>
         <div class="col-xl-3 col-md-6">
@@ -153,7 +127,7 @@ require_once __DIR__ . '/../../includes/sidebar.php';
         </div>
         <div class="col-xl-3 col-md-6">
             <div class="panel h-100">
-                <div class="text-muted small">Profit / Cash Surplus</div>
+                <div class="text-muted small">Arus Kas Bersih Bulan Ini</div>
                 <div class="fs-4 fw-bold <?= $profit >= 0 ? 'text-success' : 'text-danger'; ?>"><?= rupiah($profit); ?></div>
                 <small class="text-muted">Pendapatan - Pengeluaran</small>
             </div>
@@ -199,7 +173,7 @@ require_once __DIR__ . '/../../includes/sidebar.php';
                 <div class="d-flex justify-content-between">
                     <div>
                         <div class="text-muted small">Dana Operasional Aktif</div>
-                        <div class="fs-4 fw-bold text-primary"><?= rupiah($operationalFundSummary['active_balance'] ?? 0); ?></div>
+                        <div class="fs-4 fw-bold text-primary"><?= rupiah($operationalFundSummary['active_cash'] ?? $operationalFundSummary['active_balance'] ?? 0); ?></div>
                         <small class="text-muted"><?= (int)($operationalFundSummary['open_count'] ?? 0); ?> personal open</small>
                     </div>
                     <a href="<?= base_url('pages/finance/operational_funds.php'); ?>" class="btn btn-sm btn-outline-primary align-self-start">Lihat</a>
@@ -216,7 +190,7 @@ require_once __DIR__ . '/../../includes/sidebar.php';
                         <h5 class="fw-bold mb-1">Cash Flow Bulanan</h5>
                         <div class="text-muted small">Perbandingan pemasukan dan pengeluaran harian.</div>
                     </div>
-                    <span class="badge rounded-pill bg-success-subtle text-success">Live dari transactions</span>
+                    <span class="badge rounded-pill bg-success-subtle text-success">Kas/Bank + Dana PIC</span>
                 </div>
                 <canvas id="cashFlowChart" height="120"></canvas>
             </div>
@@ -252,7 +226,7 @@ require_once __DIR__ . '/../../includes/sidebar.php';
                         <h5 class="fw-bold mb-1">Transaksi Terbaru</h5>
                         <div class="text-muted small">Ringkasan transaksi terakhir pada periode terpilih.</div>
                     </div>
-                    <a href="<?= base_url('pages/finance/transactions.php?month=' . urlencode($month)); ?>" class="btn btn-sm btn-outline-success">Lihat Semua</a>
+                    <a href="<?= base_url('pages/reports/index.php?' . http_build_query(['type'=>'finance','from'=>$startDate,'to'=>$endDate])); ?>" class="btn btn-sm btn-outline-success">Lihat Arus Kas</a>
                 </div>
 
                 <div class="table-responsive">

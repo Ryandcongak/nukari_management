@@ -1,94 +1,53 @@
 <?php
 require_once __DIR__ . '/../../includes/auth.php';
-require_once __DIR__ . '/analytics_helper.php';
+require_permission('operations.view');
+require_once __DIR__ . '/analytics_employee_helper.php';
 
 $employeeId = (int)($_GET['employee_id'] ?? 0);
-$periodType = $_GET['type'] ?? 'monthly';
-[$periodStart, $periodEnd] = hr_get_period_range($pdo, $periodType, $_GET);
+$payload = hr_build_employee_evaluation($pdo, $employeeId, $_GET);
 
-$employeeStmt = $pdo->prepare("SELECT id, full_name, employee_code, position, department FROM employees WHERE id = :id AND LOWER(COALESCE(position,'')) NOT REGEXP :excluded_positions LIMIT 1");
-$employeeStmt->execute([':id' => $employeeId, ':excluded_positions' => hr_executive_position_regex()]);
-$employee = $employeeStmt->fetch(PDO::FETCH_ASSOC);
-
-if (!$employee) {
+if (!$payload) {
     http_response_code(404);
-    echo '<div class="alert alert-warning mb-0">Data karyawan tidak ditemukan atau jabatan tidak termasuk objek evaluasi HR Analytics.</div>';
+    echo '<div class="alert alert-warning mb-0">Data karyawan atau hasil evaluasi pada periode ini tidak ditemukan.</div>';
     exit;
 }
 
-$detailStmt = $pdo->prepare("
-    SELECT
-        attendance_date,
-        check_in,
-        check_out,
-        status,
-        attendance_type,
-        attendance_day_value,
-        CASE
-            WHEN attendance_type = 'half_day_morning' THEN 'morning'
-            WHEN attendance_type = 'half_day_afternoon' THEN 'afternoon'
-            ELSE NULL
-        END AS half_day_type,
-        COALESCE(late_minutes, 0) AS late_minutes,
-        COALESCE(early_leave_minutes, 0) AS early_leave_minutes,
-        CASE
-            WHEN attendance_type = 'half_day_morning' AND TIME(check_in) < '08:00:00' THEN 'morning'
-            WHEN attendance_type = 'half_day_afternoon' AND TIME(check_in) < '12:00:00' THEN 'afternoon'
-            WHEN COALESCE(attendance_type, '') NOT IN ('half_day_morning','half_day_afternoon') AND TIME(check_in) < '08:00:00' THEN 'full_day'
-            ELSE NULL
-        END AS early_arrival_type,
-        COALESCE(overtime_minutes, 0) AS overtime_minutes
-    FROM attendances
-    WHERE employee_id = :employee_id
-      AND attendance_date BETWEEN :period_start AND :period_end
-      AND (
-          COALESCE(late_minutes, 0) > 0
-          OR COALESCE(early_leave_minutes, 0) > 0
-          OR COALESCE(overtime_minutes, 0) > 0
-          OR LOWER(COALESCE(status, '')) IN ('absent', 'alpha', 'alpa', 'tidak hadir')
-          OR attendance_type IN ('half_day_morning','half_day_afternoon')
-          OR ((check_in IS NULL) <> (check_out IS NULL))
-          OR (TIME(check_in) < '08:00:00')
-      )
-    ORDER BY attendance_date ASC
-");
-$detailStmt->execute([
-    ':employee_id' => $employeeId,
-    ':period_start' => $periodStart,
-    ':period_end' => $periodEnd,
-]);
-$details = $detailStmt->fetchAll(PDO::FETCH_ASSOC);
+$employee = $payload['employee'];
+$evaluation = $payload['evaluation'];
+$explanation = $payload['explanation'];
+$details = $payload['details'];
+$counts = $payload['counts'];
+$periodStart = $payload['periodStart'];
+$periodEnd = $payload['periodEnd'];
 
-$analyticsData = hr_build_analytics($pdo, $_GET);
-$evaluation = null;
-foreach ($analyticsData['rows'] as $analyticsRow) {
-    if ((int)$analyticsRow['employee_id'] === $employeeId) {
-        $evaluation = $analyticsRow;
-        break;
-    }
-}
-$evaluation = $evaluation ?: [
-    'score'=>0, 'evaluation_note'=>'Belum ada data', 'evaluation_class'=>'secondary',
-    'attendance_rate'=>0, 'discipline_rate'=>0, 'work_rate'=>0,
-    'overtime_score'=>0, 'leave_score'=>0,
-];
-$explanation = hr_evaluation_explanation($evaluation);
-
-$lateDays = count(array_filter($details, fn($row) => (int)$row['late_minutes'] > 0));
-$earlyDays = count(array_filter($details, fn($row) => (int)$row['early_leave_minutes'] > 0));
-$overtimeDays = count(array_filter($details, fn($row) => (int)$row['overtime_minutes'] > 0));
-$absentDays = count(array_filter($details, fn($row) => in_array(strtolower((string)$row['status']), ['absent', 'alpha', 'alpa', 'tidak hadir'], true)));
-$halfDays = count(array_filter($details, fn($row) => !empty($row['half_day_type'])));
-$earlyArrivalDays = count(array_filter($details, fn($row) => !empty($row['early_arrival_type'])));
-$incompleteScans = count(array_filter($details, fn($row) => empty($row['check_in']) xor empty($row['check_out'])));
+$pdfQuery = $payload['periodSource'];
+$pdfQuery['employee_id'] = $employeeId;
+$reviewQuery = $pdfQuery;
+$reviewQuery['mode'] = 'inline';
+$downloadQuery = $pdfQuery;
+$downloadQuery['mode'] = 'download';
+$reviewUrl = base_url('pages/hr/analytics_employee_pdf.php?' . http_build_query($reviewQuery));
+$downloadUrl = base_url('pages/hr/analytics_employee_pdf.php?' . http_build_query($downloadQuery));
 ?>
 
 <div class="employee-detail-head mb-3">
-    <h5 class="mb-1"><?= h($employee['full_name']); ?></h5>
-    <div class="text-muted small">
-        <?= h($employee['employee_code'] ?: '-'); ?> · <?= h($employee['position'] ?: '-'); ?> · <?= h($employee['department'] ?: '-'); ?>
+    <div class="d-flex flex-wrap justify-content-between align-items-start gap-3">
+        <div>
+            <h5 class="mb-1"><?= h($employee['full_name']); ?></h5>
+            <div class="text-muted small">
+                <?= h($employee['employee_code'] ?: '-'); ?> · <?= h($employee['position'] ?: '-'); ?> · <?= h($employee['department'] ?: '-'); ?>
+            </div>
+            <div class="text-muted small mt-1">Periode <?= h(date('d/m/Y', strtotime($periodStart))); ?>–<?= h(date('d/m/Y', strtotime($periodEnd))); ?></div>
+        </div>
+        <div class="d-flex flex-wrap gap-2">
+            <a href="<?= h($reviewUrl); ?>" target="_blank" rel="noopener" class="btn btn-outline-primary btn-sm">
+                <i class="bi bi-file-earmark-pdf me-1"></i>Review PDF
+            </a>
+            <a href="<?= h($downloadUrl); ?>" class="btn btn-success btn-sm">
+                <i class="bi bi-download me-1"></i>Download PDF
+            </a>
+        </div>
     </div>
-    <div class="text-muted small mt-1">Periode <?= h(date('d/m/Y', strtotime($periodStart))); ?>–<?= h(date('d/m/Y', strtotime($periodEnd))); ?></div>
 </div>
 
 <div class="card border-0 bg-light rounded-4 mb-3">
@@ -118,13 +77,13 @@ $incompleteScans = count(array_filter($details, fn($row) => empty($row['check_in
 </div>
 
 <div class="row g-2 mb-3">
-    <div class="col-6 col-md-3"><div class="detail-summary"><span>Telat</span><strong><?= $lateDays; ?>x</strong></div></div>
-    <div class="col-6 col-md-3"><div class="detail-summary"><span>Pulang awal</span><strong><?= $earlyDays; ?>x</strong></div></div>
-    <div class="col-6 col-md-3"><div class="detail-summary"><span>Lembur</span><strong><?= $overtimeDays; ?>x</strong></div></div>
-    <div class="col-6 col-md-3"><div class="detail-summary"><span>Setengah hari</span><strong><?= $halfDays; ?>x</strong></div></div>
-    <div class="col-6 col-md-3"><div class="detail-summary"><span>Datang awal</span><strong><?= $earlyArrivalDays; ?>x</strong></div></div>
-    <div class="col-6 col-md-3"><div class="detail-summary"><span>Alpha</span><strong><?= $absentDays; ?>x</strong></div></div>
-    <div class="col-6 col-md-3"><div class="detail-summary"><span>Perlu diperiksa</span><strong><?= $incompleteScans; ?>x</strong></div></div>
+    <div class="col-6 col-md-3"><div class="detail-summary"><span>Telat</span><strong><?= $counts['late']; ?>x</strong></div></div>
+    <div class="col-6 col-md-3"><div class="detail-summary"><span>Pulang awal</span><strong><?= $counts['early_leave']; ?>x</strong></div></div>
+    <div class="col-6 col-md-3"><div class="detail-summary"><span>Lembur</span><strong><?= $counts['overtime']; ?>x</strong></div></div>
+    <div class="col-6 col-md-3"><div class="detail-summary"><span>Setengah hari</span><strong><?= $counts['half_day']; ?>x</strong></div></div>
+    <div class="col-6 col-md-3"><div class="detail-summary"><span>Datang awal</span><strong><?= $counts['early_arrival']; ?>x</strong></div></div>
+    <div class="col-6 col-md-3"><div class="detail-summary"><span>Alpha</span><strong><?= $counts['absent']; ?>x</strong></div></div>
+    <div class="col-6 col-md-3"><div class="detail-summary"><span>Perlu diperiksa</span><strong><?= $counts['incomplete_scan']; ?>x</strong></div></div>
 </div>
 
 <div class="table-responsive">
@@ -133,40 +92,23 @@ $incompleteScans = count(array_filter($details, fn($row) => empty($row['check_in
         <tbody>
         <?php foreach ($details as $row): ?>
             <?php
-            $events = [];
-            $durations = [];
-            if (($row['half_day_type'] ?? '') === 'morning') {
-                $events[] = '<span class="badge text-bg-info">Setengah hari pagi</span>';
-                $durations[] = '0,5 hari';
-            } elseif (($row['half_day_type'] ?? '') === 'afternoon') {
-                $events[] = '<span class="badge text-bg-info">Setengah hari siang</span>';
-                $durations[] = '0,5 hari';
-            }
-            if (!empty($row['early_arrival_type'])) {
-                $events[] = '<span class="badge text-bg-success">Datang lebih awal</span>';
-                $durations[] = 'Sangat bagus';
-            }
-            if ((int)$row['late_minutes'] > 0) {
-                $events[] = '<span class="badge text-bg-warning">Terlambat</span>';
-                $durations[] = hr_minutes_to_text($row['late_minutes']);
-            }
-            if ((int)$row['early_leave_minutes'] > 0) {
-                $events[] = '<span class="badge text-bg-danger">Pulang awal</span>';
-                $durations[] = hr_minutes_to_text($row['early_leave_minutes']);
-            }
-            if ((int)$row['overtime_minutes'] > 0) {
-                $events[] = '<span class="badge text-bg-primary">Lembur</span>';
-                $durations[] = hr_minutes_to_text($row['overtime_minutes']);
-            }
-            if (in_array(strtolower((string)$row['status']), ['absent', 'alpha', 'alpa', 'tidak hadir'], true)) {
-                $events[] = '<span class="badge text-bg-secondary">Alpha</span>';
-                $durations[] = 'Tidak hadir';
-            }
-            if (empty($row['check_in']) xor empty($row['check_out'])) {
-                $events[] = '<span class="badge text-bg-danger">Scan tidak lengkap</span>';
-                $durations[] = '0 hari · perlu koreksi';
-            }
-            if (!$events) continue;
+            $eventData = hr_employee_detail_events($row);
+            if (!$eventData['events']) continue;
+            $eventClasses = [
+                'Setengah hari pagi' => 'info',
+                'Setengah hari siang' => 'info',
+                'Datang lebih awal' => 'success',
+                'Terlambat' => 'warning',
+                'Pulang awal' => 'danger',
+                'Lembur' => 'primary',
+                'Alpha' => 'secondary',
+                'Scan tidak lengkap' => 'danger',
+            ];
+            $events = array_map(
+                fn($event) => '<span class="badge text-bg-' . ($eventClasses[$event] ?? 'secondary') . '">' . h($event) . '</span>',
+                $eventData['events']
+            );
+            $durations = $eventData['durations'];
             ?>
             <tr>
                 <td class="text-nowrap"><?= h(date('d/m/Y', strtotime($row['attendance_date']))); ?></td>

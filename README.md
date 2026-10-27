@@ -30,18 +30,16 @@ Aplikasi mendeteksi HTTPS, hostname, serta subpath dari request dan header rever
 
 Untuk Cloudflare Tunnel, arahkan service ke origin MAMP, misalnya `http://localhost:8888`. Bila aplikasi masih berada di document root MAMP sebagai folder `nukari_management`, URL publiknya menggunakan path `/nukari_management/`. Alternatif yang lebih bersih adalah mengatur virtual host Apache dengan document root langsung ke folder project lalu menggunakan domain tanpa subpath.
 
-## Role dan izin perubahan data
+## Role dan izin akses
 
-| Modul | Role yang dapat mengubah data |
+| Role | Akses |
 |---|---|
-| User | super_admin, admin |
-| Payroll/Finance/Hutang/Talangan | super_admin, admin, manager, finance |
-| Karyawan/Absensi/HR | super_admin, admin, manager |
-| Proyek | super_admin, admin, manager, finance, staff |
-| Aset/Produk/Client/Supplier | super_admin, admin, manager, staff |
-| Notifikasi | super_admin, admin, manager |
+| super_admin | Akses penuh, User Management, seluruh operasional, laporan, pembayaran, dan tindakan pemulihan teknis |
+| admin | Seluruh operasional, laporan, serta pembayaran payroll; tidak dapat mengelola akun dan role |
+| director | Laporan eksekutif dan notifikasi read-only; dapat mencetak atau mengekspor laporan |
+| commissioner | Laporan eksekutif dan notifikasi read-only; dapat mencetak atau mengekspor laporan |
 
-Pengguna lain tetap dapat melihat halaman yang tersedia, tetapi request perubahan akan ditolak oleh server.
+Pembatasan dilakukan pada server untuk akses baca maupun perubahan data. Menyembunyikan menu hanya menjadi lapisan antarmuka tambahan. Payroll tetap memakai alur `Draft -> Paid & Locked`; tanda tangan slip dilakukan secara fisik dan tidak menjadi approval digital di aplikasi.
 
 ## Backup database
 
@@ -86,9 +84,11 @@ Perintah tersebut membuat database sementara, memulihkan backup, menjalankan aud
 
 ## Laporan dan perangkat
 
-Menu **Laporan** menyediakan laporan keuangan, proyek, payroll, aset, penjualan produk, dan karyawan. Setiap laporan dapat difilter, diunduh sebagai CSV berformat UTF-8 yang kompatibel dengan Excel, serta dicetak atau disimpan sebagai PDF melalui dialog Print browser.
+Menu **Laporan** menyediakan laporan keuangan, proyek, payroll, aset, penjualan produk, dan karyawan. Direktur dan Komisaris memakai tampilan **Ringkasan Manajemen** yang sama dan sepenuhnya read-only; peran tetap dipisah agar izin dapat dikembangkan pada masa depan. Setiap laporan dapat difilter, diunduh sebagai CSV berformat UTF-8 yang kompatibel dengan Excel, serta dicetak atau disimpan sebagai PDF melalui dialog Print browser.
 
-Tampilan global mendukung desktop, laptop, tablet, dan smartphone. Pada layar kecil, tabel lebar dapat digeser secara horizontal; gunakan mode landscape ketika mencetak tabel dengan banyak kolom.
+Pada laporan keuangan, **Total Uang Perusahaan** adalah saldo kas/bank aktif ditambah sisa uang perusahaan yang masih dipegang PIC. Piutang dan hutang disajikan terpisah, sedangkan **Posisi Bersih** dihitung sebagai total uang + piutang - hutang. Pemberian dana kepada PIC dan pengembalian sisa dana adalah transfer internal; hanya pemakaian Dana PIC yang menjadi pengeluaran pada arus kas. Dashboard Keuangan dan laporan memakai sumber arus kas konsolidasi yang sama. Ringkasan Manajemen menampilkan kesimpulan utama, periode cepat, waktu pembaruan data, dan rincian yang dapat dibuka bila diperlukan.
+
+Tampilan global mendukung desktop, laptop, tablet, dan smartphone. Pada layar kecil, tabel lebar dapat digeser secara horizontal; gunakan mode landscape ketika mencetak tabel dengan banyak kolom. Tooltip kontekstual tersedia pada menu, tombol aksi, field formulir, status, dan card ringkasan; pengguna dapat membukanya dengan pointer, fokus keyboard, atau sentuhan pada perangkat mobile.
 
 ## Panduan penggunaan dan POS
 
@@ -96,7 +96,7 @@ Menu **Panduan Penggunaan** berbentuk buku dokumentasi dengan daftar isi, bab la
 
 POS mendukung beberapa antrean keranjang sekaligus. Antrean disimpan di browser komputer kasir sehingga pelanggan dapat ditahan sementara, antrean baru dapat dilayani, lalu keranjang sebelumnya dibuka kembali. Setelah pembayaran berhasil diproses, antrean terkait dikeluarkan dari daftar.
 
-Absensi hasil impor dapat ditambah, dikoreksi, atau dihapus per karyawan dari halaman Absensi. Perubahan manual menghitung ulang keterlambatan, pulang awal, dan total kerja serta dicatat pada activity log. Scan tidak lengkap atau durasi tidak baku di bawah enam jam masuk ke antrean review. Admin/manager dapat mengonfirmasi data tersebut dengan catatan tanpa mengubah nilai kehadiran; perubahan jam atau import ulang dengan data berbeda akan membuka review kembali.
+Absensi hasil impor dapat ditambah, dikoreksi, atau dihapus per karyawan dari halaman Absensi. Perubahan manual menghitung ulang keterlambatan, pulang awal, dan total kerja serta dicatat pada activity log. Scan tidak lengkap atau durasi tidak baku di bawah enam jam masuk ke antrean review. Superadmin/Admin dapat mengonfirmasi data tersebut dengan catatan tanpa mengubah nilai kehadiran; perubahan jam atau import ulang dengan data berbeda akan membuka review kembali.
 
 ## Pemeriksaan setelah perubahan
 

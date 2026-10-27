@@ -2,12 +2,13 @@
 |--------------------------------------------------------------------------
 | Nukari UI Global Components
 |--------------------------------------------------------------------------
-| v1.1 - Currency Input Formatter & Global Table Sorting
+| v1.3 - Currency, Table Sorting & Contextual Tooltips
 | - Menampilkan nominal dengan titik ribuan: 2300000 -> 2.300.000
 | - Saat form disubmit, nilai dikembalikan ke angka mentah: 2300000
 | - Otomatis aktif pada input uang yang memiliki class .currency-input
 |   atau input dengan nama field nominal/amount/price/cost/salary/dll.
 | - Otomatis mengaktifkan sorting pada tabel melalui judul kolom.
+| - Memberikan tooltip kontekstual pada menu, aksi, form, status, dan card.
 */
 (function () {
     'use strict';
@@ -257,9 +258,235 @@
         root.querySelectorAll('table').forEach(initSortableTable);
     }
 
+    const IS_REPORT_PAGE = /\/pages\/reports\//.test(window.location.pathname);
+    const STAT_HELP = {
+        'total karyawan': 'Jumlah seluruh karyawan yang tercakup pada halaman dan filter yang sedang digunakan.',
+        'karyawan aktif': 'Jumlah karyawan dengan status kerja aktif.',
+        'hadir hari ini': 'Jumlah karyawan yang tercatat hadir pada tanggal hari ini.',
+        'terlambat': 'Jumlah kehadiran yang melewati batas waktu masuk sesuai aturan absensi.',
+        'izin / sakit': 'Jumlah ketidakhadiran yang tercatat sebagai izin atau sakit.',
+        'alpha': 'Jumlah ketidakhadiran tanpa keterangan yang tercatat.',
+        'total proyek': 'Jumlah proyek yang tercakup pada halaman dan filter saat ini.',
+        'proyek aktif': 'Jumlah proyek yang masih berjalan atau belum selesai.',
+        'nilai kontrak': 'Total nilai kontrak proyek yang tercakup dalam data saat ini.',
+        'termin dibayar': 'Total nilai termin proyek yang sudah berstatus dibayar.',
+        'total pemasukan': 'Jumlah uang masuk yang tercatat pada periode dan filter saat ini.',
+        'total pengeluaran': 'Jumlah uang keluar yang tercatat pada periode dan filter saat ini.',
+        'saldo': 'Jumlah uang yang tersedia berdasarkan transaksi yang sudah tercatat.',
+        'saldo akhir': 'Posisi uang setelah seluruh pemasukan dan pengeluaran pada periode dihitung.',
+        'hutang': 'Kewajiban perusahaan yang masih harus dibayarkan.',
+        'piutang': 'Hak tagih perusahaan yang pembayarannya belum diterima.',
+        'gaji bersih': 'Gaji akhir setelah komponen pendapatan ditambah dan seluruh potongan dikurangi.',
+        'gaji pokok': 'Nilai gaji dasar sebelum tunjangan, tambahan, dan potongan.',
+        'total potongan': 'Jumlah seluruh komponen yang mengurangi nilai payroll.',
+        'total aset': 'Jumlah aset perusahaan yang tercatat pada halaman ini.',
+        'nilai aset': 'Total nilai aset berdasarkan data yang tersimpan.',
+        'stok': 'Jumlah persediaan produk yang tercatat saat ini.',
+        'penjualan': 'Ringkasan transaksi penjualan sesuai periode dan filter saat ini.',
+        'omzet': 'Total nilai penjualan sebelum dikurangi biaya atau harga pokok.',
+        'laba': 'Selisih antara nilai penjualan dan biaya atau harga pokok yang tercatat.',
+        'pending': 'Jumlah data yang masih menunggu tindakan atau penyelesaian.',
+        'perlu review': 'Jumlah data yang memerlukan pemeriksaan pengguna.'
+    };
+    const STATUS_HELP = {
+        active: 'Status aktif: data ini masih digunakan dalam operasional.',
+        aktif: 'Status aktif: data ini masih digunakan dalam operasional.',
+        inactive: 'Status tidak aktif: data disimpan tetapi tidak digunakan untuk operasional baru.',
+        'tidak aktif': 'Status tidak aktif: data disimpan tetapi tidak digunakan untuk operasional baru.',
+        draft: 'Draft: data masih dapat diperiksa dan belum menjadi catatan final.',
+        pending: 'Pending: data masih menunggu proses atau tindak lanjut.',
+        posted: 'Posted: transaksi sudah dibukukan dan memengaruhi saldo.',
+        historical: 'Historis: data lama untuk dokumentasi dan tidak mengubah saldo berjalan.',
+        paid: 'Paid: pembayaran sudah dicatat selesai.',
+        dibayar: 'Dibayar: pembayaran sudah dicatat selesai.',
+        unpaid: 'Belum dibayar: masih terdapat pembayaran yang harus diselesaikan.',
+        approved: 'Disetujui: data sudah melewati proses persetujuan yang berlaku.',
+        disetujui: 'Disetujui: data sudah melewati proses persetujuan yang berlaku.',
+        rejected: 'Ditolak: data tidak diterima pada proses pemeriksaan.',
+        ditolak: 'Ditolak: data tidak diterima pada proses pemeriksaan.',
+        completed: 'Selesai: proses atau pekerjaan sudah ditutup.',
+        selesai: 'Selesai: proses atau pekerjaan sudah ditutup.',
+        ongoing: 'Berjalan: proses atau pekerjaan masih berlangsung.',
+        berjalan: 'Berjalan: proses atau pekerjaan masih berlangsung.',
+        cancelled: 'Dibatalkan: data tidak dilanjutkan ke proses berikutnya.',
+        dibatalkan: 'Dibatalkan: data tidak dilanjutkan ke proses berikutnya.'
+    };
+
+    function normalizedText(value) {
+        return String(value || '').replace(/\s+/g, ' ').trim();
+    }
+
+    function elementsIn(scope, selector) {
+        const root = scope || document;
+        const items = [];
+        if (root.matches && root.matches(selector)) items.push(root);
+        if (root.querySelectorAll) items.push(...root.querySelectorAll(selector));
+        return items;
+    }
+
+    function registerTooltip(element, message, placement) {
+        if (!element || !message || element.dataset.nukariTooltipReady === '1') return;
+        element.dataset.nukariTooltipReady = '1';
+        element.dataset.nukariTooltip = '1';
+        element.setAttribute('data-bs-title', message);
+        if (!element.matches('a, button, input, select, textarea, [tabindex], [contenteditable="true"]')) {
+            element.setAttribute('tabindex', '0');
+        }
+        if (!element.getAttribute('aria-label') && !normalizedText(element.textContent)) {
+            element.setAttribute('aria-label', message);
+        }
+        const existingToggle = (element.getAttribute('data-bs-toggle') || '').toLowerCase();
+        if (element.matches(':disabled') || ['button', 'dropdown', 'tab', 'pill', 'popover'].includes(existingToggle)) {
+            element.setAttribute('title', message);
+            return;
+        }
+        if (window.bootstrap && window.bootstrap.Tooltip) {
+            new window.bootstrap.Tooltip(element, {
+                title: message,
+                placement: placement || 'top',
+                trigger: 'hover focus',
+                container: 'body',
+                customClass: 'nukari-global-tooltip',
+                delay: { show: 180, hide: 60 }
+            });
+        }
+    }
+
+    function actionHelp(element) {
+        const existing = element.dataset.tooltip || element.dataset.bsTitle || element.getAttribute('title') || element.getAttribute('aria-label');
+        if (existing) return normalizedText(existing);
+        let label = normalizedText(element.textContent);
+        if (label.length > 80) {
+            const concise = element.querySelector('.kpi-label, .metric-label, .stat-title, .card-title, h3, h4, h5, h6');
+            label = normalizedText(concise ? concise.textContent : label.slice(0, 80));
+        }
+        const text = label.toLowerCase();
+        if (!label) {
+            const icon = element.querySelector('i');
+            const iconClass = icon ? icon.className : '';
+            if (/bi-(pencil|pen)/.test(iconClass)) return 'Ubah informasi pada data yang dipilih.';
+            if (/bi-(trash|x-circle)/.test(iconClass)) return 'Hapus atau batalkan data yang dipilih.';
+            if (/bi-(eye|search)/.test(iconClass)) return 'Lihat informasi lebih lengkap untuk data ini.';
+            if (/bi-(plus|file-earmark-plus)/.test(iconClass)) return 'Tambahkan data baru.';
+            if (/bi-(download|file-earmark-arrow-down)/.test(iconClass)) return 'Unduh data atau berkas ini.';
+            if (/bi-(printer|file-pdf)/.test(iconClass)) return 'Cetak data atau simpan sebagai PDF.';
+            if (/bi-(check|check2|check-circle)/.test(iconClass)) return 'Konfirmasi tindakan untuk data ini.';
+            if (/bi-(chevron-left|arrow-left)/.test(iconClass)) return 'Kembali ke data atau halaman sebelumnya.';
+            if (/bi-(chevron-right|arrow-right)/.test(iconClass)) return 'Lanjut ke data atau halaman berikutnya.';
+            if (/bi-(three-dots|list)/.test(iconClass)) return 'Tampilkan pilihan tindakan lainnya.';
+            if (/bi-(gear|sliders)/.test(iconClass)) return 'Buka pengaturan untuk bagian ini.';
+            return '';
+        }
+        if (element.dataset.date) return `Buka aktivitas pada tanggal ${element.dataset.date}.`;
+        if (/(logout|keluar)/.test(text)) return 'Keluar dari akun dan kembali ke halaman login.';
+        if (/(hapus|delete|remove)/.test(text)) return 'Menghapus data yang dipilih. Periksa kembali karena tindakan ini dapat memengaruhi data terkait.';
+        if (/(simpan|save)/.test(text)) return 'Simpan data yang sudah diisi atau diperbarui.';
+        if (/(tambah|buat|input|data baru)/.test(text)) return 'Buka formulir untuk menambahkan data baru.';
+        if (/(edit|ubah|perbarui|update)/.test(text)) return 'Ubah informasi pada data yang dipilih.';
+        if (/(bayar|paid|lunas)/.test(text)) return 'Catat pembayaran dan perbarui status data ini.';
+        if (/(setujui|approve)/.test(text)) return 'Setujui data yang sedang diperiksa.';
+        if (/(tolak|reject)/.test(text)) return 'Tolak data yang sedang diperiksa.';
+        if (/(cetak|print|pdf)/.test(text)) return 'Buka tampilan cetak atau simpan halaman sebagai PDF.';
+        if (/(download|unduh|export)/.test(text)) return 'Unduh data sesuai halaman dan filter yang sedang digunakan.';
+        if (/(upload|unggah|import|impor)/.test(text)) return 'Masukkan data dari berkas yang dipilih ke dalam sistem.';
+        if (/(cari|search)/.test(text)) return 'Cari data menggunakan kata kunci yang dimasukkan.';
+        if (/(filter|tampilkan|terapkan)/.test(text)) return 'Terapkan pilihan filter untuk memperbarui data yang ditampilkan.';
+        if (/(reset|bersihkan)/.test(text)) return 'Kembalikan isian atau filter ke kondisi awal.';
+        if (/(kembali|back)/.test(text)) return 'Kembali ke halaman sebelumnya.';
+        if (/(detail|lihat|buka)/.test(text)) return 'Buka informasi lebih lengkap untuk data ini.';
+        if (/(tutup|close|batal)/.test(text)) return 'Tutup bagian ini tanpa melanjutkan tindakan.';
+        if (/(refresh|muat ulang|sinkron)/.test(text)) return 'Muat ulang data terbaru dari sistem.';
+        if (/(generate|hitung ulang|proses)/.test(text)) return 'Jalankan proses perhitungan atau pembuatan data sesuai pilihan saat ini.';
+        if (element.classList.contains('nav-link')) return `Buka menu ${label}.`;
+        if (element.classList.contains('page-link')) return `Buka halaman ${label}.`;
+        if (element.classList.contains('dropdown-item')) return `Pilih tindakan ${label}.`;
+        return `Jalankan tindakan ${label}.`;
+    }
+
+    function fieldLabel(field) {
+        if (field.id) {
+            const escapedId = window.CSS && window.CSS.escape ? window.CSS.escape(field.id) : field.id.replace(/(["\\])/g, '\\$1');
+            const explicit = document.querySelector(`label[for="${escapedId}"]`);
+            if (explicit) return normalizedText(explicit.textContent);
+        }
+        const wrapper = field.closest('.mb-3, .form-group, [class*="col-"]');
+        const nearby = wrapper ? wrapper.querySelector('label.form-label, label') : null;
+        return normalizedText(nearby ? nearby.textContent : (field.getAttribute('aria-label') || field.placeholder || field.name));
+    }
+
+    function fieldHelp(field) {
+        const existing = field.dataset.tooltip || field.dataset.bsTitle || field.getAttribute('title');
+        if (existing) return normalizedText(existing);
+        const label = fieldLabel(field);
+        if (!label) return '';
+        const type = (field.getAttribute('type') || '').toLowerCase();
+        if (field.tagName === 'SELECT') return `Pilih ${label.toLowerCase()} yang sesuai.`;
+        if (type === 'date' || type === 'month' || type === 'datetime-local') return `Pilih ${label.toLowerCase()} untuk menentukan periode atau tanggal data.`;
+        if (type === 'file') return `Pilih berkas untuk ${label.toLowerCase()}.`;
+        if (type === 'search' || /cari|search|keyword/i.test(`${field.name} ${field.placeholder}`)) return `Ketik kata kunci untuk mencari ${label.toLowerCase()}.`;
+        if (type === 'checkbox' || type === 'radio') return `Aktifkan pilihan ${label.toLowerCase()} jika diperlukan.`;
+        return `Isi ${label.toLowerCase()} sesuai data yang benar.`;
+    }
+
+    function statHelp(label) {
+        const normalized = normalizedText(label).toLowerCase();
+        if (STAT_HELP[normalized]) return STAT_HELP[normalized];
+        const partial = Object.keys(STAT_HELP).find(key => normalized.includes(key));
+        if (partial) return STAT_HELP[partial];
+        return `Ringkasan ${normalized} berdasarkan data dan filter yang sedang ditampilkan pada halaman ini.`;
+    }
+
+    function prepareStatCard(card) {
+        if (!card || card.dataset.nukariHelpReady === '1') return;
+        card.dataset.nukariHelpReady = '1';
+        const title = card.querySelector('.stat-title, .kpi-label, .metric-label, .metric-title, .stat-label, .card-title, h3, h4, h5, h6');
+        if (!title || title.querySelector('.nukari-card-help')) return;
+        const label = normalizedText(title.textContent);
+        if (!label) return;
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.className = 'nukari-card-help';
+        button.setAttribute('aria-label', `Penjelasan ${label}`);
+        button.innerHTML = '<i class="bi bi-info" aria-hidden="true"></i>';
+        button.addEventListener('click', event => event.stopPropagation());
+        title.appendChild(button);
+        registerTooltip(button, statHelp(label), 'top');
+    }
+
+    function initHelpfulTooltips(scope) {
+        if (IS_REPORT_PAGE) return;
+        const root = scope || document;
+        elementsIn(root, '.stat-card, .kpi-card, .metric-card, .asset-kpi, .summary-card').forEach(prepareStatCard);
+
+        elementsIn(root, '.btn, button, [role="button"], .nav-link, .page-link, .dropdown-item, [data-bs-toggle="modal"]').forEach(element => {
+            if (element.classList.contains('nukari-card-help') || element.classList.contains('nukari-no-tooltip')) return;
+            if (element.closest('.tooltip')) return;
+            const message = actionHelp(element);
+            if (message) registerTooltip(element, message, element.closest('.sidebar') ? 'right' : 'top');
+        });
+
+        elementsIn(root, 'input:not([type="hidden"]), select, textarea').forEach(field => {
+            if (field.classList.contains('nukari-no-tooltip') || field.closest('.nukari-no-tooltip')) return;
+            const message = fieldHelp(field);
+            if (message) registerTooltip(field, message, 'top');
+        });
+
+        elementsIn(root, '.badge, .status-badge').forEach(badge => {
+            const status = normalizedText(badge.textContent).toLowerCase();
+            const key = Object.keys(STATUS_HELP).find(item => status === item || status.startsWith(`${item} `));
+            if (key) registerTooltip(badge, STATUS_HELP[key], 'top');
+        });
+
+        elementsIn(root, '[title]').forEach(element => {
+            if (element.dataset.nukariTooltipReady === '1' || element.classList.contains('nukari-no-tooltip')) return;
+            registerTooltip(element, normalizedText(element.getAttribute('title')), element.closest('.sidebar') ? 'right' : 'top');
+        });
+    }
+
     document.addEventListener('DOMContentLoaded', function () {
         initCurrencyInputs(document);
         initSortableTables(document);
+        initHelpfulTooltips(document);
 
         // Memberi petunjuk aksesibel pada tabel yang dapat digeser di layar kecil.
         document.querySelectorAll('.table-responsive').forEach(function (wrapper) {
@@ -280,6 +507,7 @@
                     if (node.querySelectorAll) {
                         initCurrencyInputs(node);
                         initSortableTables(node);
+                        initHelpfulTooltips(node);
                     }
                 });
             });
@@ -293,4 +521,5 @@
     window.NukariUI.formatRupiahNumber = formatRupiahNumber;
     window.NukariUI.initCurrencyInputs = initCurrencyInputs;
     window.NukariUI.initSortableTables = initSortableTables;
+    window.NukariUI.initHelpfulTooltips = initHelpfulTooltips;
 })();

@@ -199,6 +199,7 @@ require_once __DIR__ . '/../../includes/sidebar.php';
                                 <td><?= date('d M Y', strtotime($t['due_date'])); ?></td>
 
                                 <td>
+                                    <?php if (($t['posting_mode'] ?? 'posted') === 'historical'): ?><span class="badge rounded-pill bg-secondary mb-1">Historis · tanpa saldo</span><br><?php elseif (($t['posting_mode'] ?? 'posted') === 'opening_outstanding'): ?><span class="badge rounded-pill bg-info text-dark mb-1">Saldo awal terbuka</span><br><?php endif; ?>
                                     <?php if ($status === 'paid'): ?>
                                         <span class="badge rounded-pill badge-soft-green">Paid</span>
                                     <?php elseif ($status === 'overdue'): ?>

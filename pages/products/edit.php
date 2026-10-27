@@ -10,36 +10,21 @@ $p=$stmt->fetch(PDO::FETCH_ASSOC);
 if(!$p){header('Location:index.php');exit;}
 
 $pageTitle='Edit Produk - Nukari';
+$error = '';
 
 function product_upload_photo_edit($old = null, $field = 'photo') {
-    if (empty($_FILES[$field]['name']) || ($_FILES[$field]['error'] ?? UPLOAD_ERR_NO_FILE) === UPLOAD_ERR_NO_FILE) return $old;
-    if (($_FILES[$field]['error'] ?? UPLOAD_ERR_OK) !== UPLOAD_ERR_OK) return $old;
-
-    $allowed = ['image/jpeg'=>'jpg','image/png'=>'png','image/webp'=>'webp','image/gif'=>'gif'];
-    $tmp = $_FILES[$field]['tmp_name'];
-    $mime = function_exists('mime_content_type') ? mime_content_type($tmp) : ($_FILES[$field]['type'] ?? '');
-    if (!isset($allowed[$mime])) return $old;
-
-    $dir = __DIR__ . '/../../uploads/products';
-    if (!is_dir($dir)) mkdir($dir, 0775, true);
-
-    $name = 'product-' . date('YmdHis') . '-' . bin2hex(random_bytes(4)) . '.' . $allowed[$mime];
-    $dest = $dir . '/' . $name;
-    if (!move_uploaded_file($tmp, $dest)) return $old;
-
-    if ($old && !preg_match('~^https?://~i', $old)) {
-        $oldPath = __DIR__ . '/../../' . ltrim($old, '/');
-        if (is_file($oldPath)) @unlink($oldPath);
-    }
-
-    return 'uploads/products/' . $name;
+    $uploaded = upload_store_file($_FILES[$field] ?? [], 'products', 'product', upload_image_mimes(true));
+    return $uploaded ?? $old;
 }
 
 if($_SERVER['REQUEST_METHOD']==='POST'){
+    $newPhoto = null;
+    try {
     $basePrice=product_parse_number($_POST['base_price']??0);
     $sell=product_parse_number($_POST['selling_price']??0);
     $barcode = trim($_POST['barcode_code'] ?? '') ?: trim($_POST['product_code'] ?? ($p['product_code'] ?? ''));
     $photo = product_upload_photo_edit($p['photo'] ?? null, 'photo');
+    if ($photo !== ($p['photo'] ?? null)) $newPhoto = $photo;
 
     $stmt=$pdo->prepare("UPDATE products SET
         product_code=?,barcode_code=?,barcode_type=?,product_name=?,category=?,product_type=?,description=?,base_price=?,track_stock=?,production_cost=?,hpp_price=?,selling_price=?,profit_estimate=?,stock=?,unit=?,minimum_stock=?,photo=?,marketplace_tokopedia=?,marketplace_shopee=?,contribution_percent=?,contribution_program_name=?,contribution_event_name=?,contribution_event_date=?,status=?,updated_at=NOW()
@@ -71,7 +56,12 @@ if($_SERVER['REQUEST_METHOD']==='POST'){
         $_POST['status']??'active',
         $id
     ]);
-    header('Location: index.php');exit;
+        if ($newPhoto) upload_delete_file($p['photo'] ?? null);
+        header('Location: index.php');exit;
+    } catch (Throwable $e) {
+        upload_delete_file($newPhoto);
+        $error = $e->getMessage();
+    }
 }
 
 $photoUrl = '';
@@ -106,6 +96,7 @@ require_once __DIR__.'/_style.php';
             <a href="index.php" class="btn btn-outline-secondary btn-rounded">Kembali</a>
         </div>
         <div class="form-card-body">
+            <?php if ($error): ?><div class="alert alert-danger"><?= product_safe($error); ?></div><?php endif; ?>
             <form method="post" enctype="multipart/form-data" class="row g-4">
                 <div class="col-lg-4">
                     <div class="photo-upload-box">

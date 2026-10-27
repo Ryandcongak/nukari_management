@@ -24,6 +24,12 @@ if (!$worker) {
 $project_id = $worker['project_id'];
 
 try {
+    $filesToDelete = [];
+    if (!empty($worker['transaction_id'])) {
+        $receiptStmt = $pdo->prepare("SELECT image_path FROM project_transaction_receipts WHERE transaction_id=:transaction_id");
+        $receiptStmt->execute([':transaction_id' => (int)$worker['transaction_id']]);
+        $filesToDelete = $receiptStmt->fetchAll(PDO::FETCH_COLUMN);
+    }
     $pdo->beginTransaction();
 
     if (!empty($worker['transaction_id'])) {
@@ -56,10 +62,11 @@ try {
     ]);
 
     $pdo->commit();
+    foreach (array_unique($filesToDelete) as $file) upload_delete_file($file);
 
     redirect('pages/projects/detail.php?id=' . $project_id . '&tab=workers');
-} catch (Exception $e) {
-    $pdo->rollBack();
+} catch (Throwable $e) {
+    if ($pdo->inTransaction()) $pdo->rollBack();
 
     redirect('pages/projects/detail.php?id=' . $project_id . '&tab=workers');
 }

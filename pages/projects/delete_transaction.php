@@ -43,14 +43,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     try {
         $pdo->beginTransaction();
 
-        foreach ($receipts as $receipt) {
-            $filePath = __DIR__ . '/../../' . $receipt['image_path'];
-
-            if (file_exists($filePath)) {
-                unlink($filePath);
-            }
-        }
-
         if (function_exists('finance_clear_project_expense_links')) {
             finance_clear_project_expense_links($pdo, 'project_transactions', (int)$id);
         }
@@ -66,10 +58,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         ]);
 
         $pdo->commit();
+        foreach ($receipts as $receipt) upload_delete_file($receipt['image_path'] ?? null);
 
         redirect('pages/projects/detail.php?id=' . $project_id . '&tab=transactions');
-    } catch (Exception $e) {
-        $pdo->rollBack();
+    } catch (Throwable $e) {
+        if ($pdo->inTransaction()) $pdo->rollBack();
         $error = 'Gagal menghapus transaksi project.';
     }
 }

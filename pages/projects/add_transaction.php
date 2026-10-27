@@ -1,5 +1,6 @@
 <?php
 require_once __DIR__ . '/../../includes/auth.php';
+require_once __DIR__ . '/../../includes/finance_helper.php';
 
 function parse_amount_id($value)
 {
@@ -11,27 +12,15 @@ function parse_amount_id($value)
 
 function uploadTransactionReceipts($files, $transaction_id, $pdo)
 {
-    if (!isset($files) || empty($files['name'][0])) {
-        return;
-    }
-    $uploadDir = __DIR__ . '/../../uploads/project_transactions/';
-    if (!is_dir($uploadDir)) {
-        mkdir($uploadDir, 0777, true);
-    }
-    $allowedExt = ['jpg', 'jpeg', 'png', 'webp'];
-    $maxSize = 5 * 1024 * 1024;
-    foreach ($files['name'] as $key => $name) {
-        if (($files['error'][$key] ?? UPLOAD_ERR_NO_FILE) === UPLOAD_ERR_NO_FILE) continue;
-        if ($files['error'][$key] !== UPLOAD_ERR_OK) throw new Exception('Ada gambar bukti transaksi yang gagal diupload.');
-        if ($files['size'][$key] > $maxSize) throw new Exception('Ukuran setiap gambar maksimal 5MB.');
-        $ext = strtolower(pathinfo((string)$name, PATHINFO_EXTENSION));
-        if (!in_array($ext, $allowedExt, true)) throw new Exception('Format gambar harus JPG, JPEG, PNG, atau WEBP.');
-        $fileName = 'trx_' . $transaction_id . '_' . date('YmdHis') . '_' . bin2hex(random_bytes(4)) . '.' . $ext;
-        $targetPath = $uploadDir . $fileName;
-        if (!move_uploaded_file($files['tmp_name'][$key], $targetPath)) throw new Exception('Gagal menyimpan gambar bukti transaksi.');
+    $paths = upload_store_multiple($files, 'project_transactions', 'trx_' . (int)$transaction_id, upload_image_mimes(), 5242880, 10);
+    try {
         $stmt = $pdo->prepare("INSERT INTO project_transaction_receipts (transaction_id, image_path) VALUES (:transaction_id, :image_path)");
-        $stmt->execute([':transaction_id' => $transaction_id, ':image_path' => 'uploads/project_transactions/' . $fileName]);
+        foreach ($paths as $path) $stmt->execute([':transaction_id' => $transaction_id, ':image_path' => $path]);
+    } catch (Throwable $e) {
+        foreach ($paths as $path) upload_delete_file($path);
+        throw $e;
     }
+    return $paths;
 }
 
 function project_get_finance_accounts(PDO $pdo): array
@@ -41,6 +30,7 @@ function project_get_finance_accounts(PDO $pdo): array
 
 function project_get_open_operational_funds(PDO $pdo): array
 {
+    $uploadedReceiptPaths = [];
     try {
         return $pdo->query("SELECT id, fund_code, person_name, current_balance FROM operational_funds WHERE status = 'open' ORDER BY person_name ASC, id DESC")->fetchAll(PDO::FETCH_ASSOC);
     } catch (Exception $e) {
@@ -96,8 +86,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $payment_method = clean_input($_POST['payment_method'] ?? 'cash');
     $transaction_date = clean_input($_POST['transaction_date'] ?? date('Y-m-d'));
     $amount = parse_amount_id($_POST['amount'] ?? 0);
+    $posting_mode = finance_normalize_posting_mode($_POST['posting_mode'] ?? 'posted');
+    $historical_reason = $posting_mode === 'historical' ? trim((string)($_POST['historical_reason'] ?? '')) : null;
 
     try {
+        $posting_mode = finance_validate_posting_mode($posting_mode, $historical_reason);
         $person_name = null;
         if ($type === 'expense' && $funding_source === 'person') {
             [$person_name, $personal_employee_id] = project_resolve_person($pdo, $personal_mode, $personal_employee_id, $person_name_manual);
@@ -108,13 +101,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
         if ($amount <= 0) throw new Exception('Jumlah harus lebih dari 0.');
         if ($category === '') throw new Exception('Kategori wajib diisi.');
-        if ($type === 'expense' && $funding_source === 'company' && $account_id <= 0) throw new Exception('Pilih akun kas/bank perusahaan.');
-        if ($type === 'expense' && $funding_source === 'operational_fund' && $operational_fund_id <= 0) throw new Exception('Pilih Dana Operasional personal.');
+        if ($posting_mode === 'posted' && ($type === 'income' || ($type === 'expense' && $funding_source === 'company')) && $account_id <= 0) throw new Exception('Pilih akun kas/bank perusahaan.');
+        if ($posting_mode === 'posted' && $type === 'expense' && $funding_source === 'operational_fund' && $operational_fund_id <= 0) throw new Exception('Pilih Dana Operasional personal.');
 
         $pdo->beginTransaction();
         $stmt = $pdo->prepare("INSERT INTO project_transactions
-            (project_id, transaction_date, transaction_type, category, description, funding_source, person_name, personal_employee_id, operational_fund_id, account_id, payment_method, amount)
-            VALUES (:project_id, :transaction_date, :type, :category, :description, :funding_source, :person_name, :personal_employee_id, :operational_fund_id, :account_id, :payment_method, :amount)");
+            (project_id, transaction_date, transaction_type, category, description, funding_source, person_name, personal_employee_id, operational_fund_id, account_id, payment_method, amount, posting_mode, historical_reason)
+            VALUES (:project_id, :transaction_date, :type, :category, :description, :funding_source, :person_name, :personal_employee_id, :operational_fund_id, :account_id, :payment_method, :amount, :posting_mode, :historical_reason)");
         $stmt->execute([
             ':project_id' => $project_id,
             ':transaction_date' => $transaction_date ?: date('Y-m-d'),
@@ -128,20 +121,20 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             ':account_id' => $funding_source === 'company' ? $account_id : null,
             ':payment_method' => $payment_method ?: 'cash',
             ':amount' => $amount,
+            ':posting_mode' => $posting_mode,
+            ':historical_reason' => $historical_reason,
         ]);
         $transaction_id = (int)$pdo->lastInsertId();
 
-        if ($type === 'expense') {
-            finance_apply_project_expense_source($pdo, 'project_transactions', $transaction_id, (int)$project_id, $funding_source, $amount, $category, $description ?: $category, $transaction_date, $account_id ?: null, $operational_fund_id ?: null, $person_name, $personal_employee_id ?: null, $payment_method, $_SESSION['user_id'] ?? null);
-        } elseif ($type === 'income' && $account_id > 0) {
-            finance_upsert_transaction($pdo, 'project', 'project_transactions', $transaction_id, 'income', (int)$project_id, $amount, $description ?: $category, $category, $transaction_date, $payment_method, 'PROJECT-TRX-' . $transaction_id, $_SESSION['user_id'] ?? null, $account_id);
-        }
+        finance_sync_project_transaction($pdo, $transaction_id, $_SESSION['user_id'] ?? null);
+        log_activity($pdo, 'Project Transaction', 'CREATE', finance_posting_mode_label($posting_mode) . ($historical_reason ? ' — ' . $historical_reason : ''), $transaction_id, 'project_transactions');
 
-        uploadTransactionReceipts($_FILES['receipt_images'] ?? null, $transaction_id, $pdo);
+        $uploadedReceiptPaths = uploadTransactionReceipts($_FILES['receipt_images'] ?? null, $transaction_id, $pdo);
         $pdo->commit();
         redirect('pages/projects/detail.php?id=' . $project_id . '&tab=transactions');
-    } catch (Exception $e) {
+    } catch (Throwable $e) {
         if ($pdo->inTransaction()) $pdo->rollBack();
+        foreach ($uploadedReceiptPaths as $path) upload_delete_file($path);
         $error = $e->getMessage();
     }
 }
@@ -161,6 +154,7 @@ require_once __DIR__ . '/../../includes/sidebar.php';
             <div class="col-md-6"><label class="form-label fw-semibold">Jenis Transaksi</label><select name="transaction_type" id="transaction_type" class="form-select"><option value="expense">Pengeluaran</option><option value="income">Pemasukan</option></select></div>
             <div class="col-md-12"><label class="form-label fw-semibold">Kategori</label><input type="text" name="category" class="form-control" placeholder="Contoh: Bahan, Transport, Konsumsi" required></div>
             <div class="col-md-12"><label class="form-label fw-semibold">Deskripsi</label><textarea name="description" rows="3" class="form-control" placeholder="Optional"></textarea></div>
+            <?php if (finance_user_can_use_non_posting()): ?><div class="col-md-12"><label class="form-label fw-semibold">Dampak Saldo</label><select name="posting_mode" id="posting_mode" class="form-select"><option value="posted">Transaksi berjalan — memengaruhi saldo</option><option value="historical">Catatan historis — tidak memengaruhi saldo/dana/hutang</option></select><small class="text-muted">Gunakan historis hanya jika transaksi sudah terkandung dalam saldo riil perusahaan.</small></div><div class="col-md-12 d-none" id="historical_reason_box"><label class="form-label fw-semibold">Alasan / Referensi Historis</label><textarea name="historical_reason" class="form-control" rows="2"></textarea></div><?php endif; ?>
             <div class="col-md-12" id="funding_section"><label class="form-label fw-semibold">Sumber Dana</label><select name="funding_source" id="funding_source" class="form-select"><option value="company">Akun Perusahaan</option><option value="operational_fund">Dana Operasional Personal</option><option value="person">Talangan Personal</option></select></div>
             <div class="col-md-12" id="company_box"><label class="form-label fw-semibold">Akun Kas/Bank Perusahaan</label><select name="account_id" class="form-select"><option value="">- Pilih Akun -</option><?php foreach ($accounts as $acc): ?><option value="<?= (int)$acc['id']; ?>"><?= htmlspecialchars($acc['account_name']); ?> - <?= rupiah($acc['current_balance']); ?></option><?php endforeach; ?></select></div>
             <div class="col-md-12" id="operational_box" style="display:none;"><label class="form-label fw-semibold">Dana Operasional Personal</label><select name="operational_fund_id" class="form-select"><option value="">- Pilih Dana Operasional -</option><?php foreach ($operationalFunds as $fund): ?><option value="<?= (int)$fund['id']; ?>"><?= htmlspecialchars($fund['person_name']); ?> (<?= htmlspecialchars($fund['fund_code']); ?>) - Saldo <?= rupiah($fund['current_balance']); ?></option><?php endforeach; ?></select><small class="text-muted">Jika belanja melebihi saldo, selisih otomatis menjadi hutang personal.</small></div>
@@ -175,6 +169,8 @@ require_once __DIR__ . '/../../includes/sidebar.php';
 <script>
 function toggleFunding(){const type=document.getElementById('transaction_type').value;const funding=document.getElementById('funding_source').value;const show=type==='expense';document.getElementById('funding_section').style.display=show?'block':'none';document.getElementById('company_box').style.display=(!show||funding==='company')?'block':'none';document.getElementById('operational_box').style.display=(show&&funding==='operational_fund')?'block':'none';document.getElementById('person_box').style.display=(show&&funding==='person')?'block':'none';}
 function togglePersonalMode(){const mode=document.getElementById('personal_mode').value;document.getElementById('personal_employee_id').style.display=mode==='employee'?'block':'none';document.getElementById('person_name').style.display=mode==='manual'?'block':'none';}
+function togglePostingMode(){const field=document.getElementById('posting_mode');if(!field)return;const historical=field.value==='historical';document.getElementById('historical_reason_box').classList.toggle('d-none',!historical);document.querySelector('[name="historical_reason"]').required=historical;}
 document.getElementById('transaction_type').addEventListener('change',toggleFunding);document.getElementById('funding_source').addEventListener('change',toggleFunding);document.getElementById('personal_mode').addEventListener('change',togglePersonalMode);toggleFunding();togglePersonalMode();
+if(document.getElementById('posting_mode')){document.getElementById('posting_mode').addEventListener('change',togglePostingMode);togglePostingMode();}
 </script>
 <?php require_once __DIR__ . '/../../includes/footer.php'; ?>

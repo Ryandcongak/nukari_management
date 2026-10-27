@@ -14,6 +14,7 @@ if (!$r) {
 
 try {
     $pdo->beginTransaction();
+    $filesToDelete = array_filter([$r['proof_file'] ?? null]);
 
     $stmt = $pdo->prepare("SELECT COUNT(*) FROM reimbursement_payments WHERE reimbursement_id = :id");
     $stmt->execute([':id' => $id]);
@@ -24,9 +25,11 @@ try {
     }
 
     if (!empty($r['debt_id'])) {
-        $stmt = $pdo->prepare("SELECT paid_amount FROM debts WHERE id = :id LIMIT 1");
+        $stmt = $pdo->prepare("SELECT paid_amount, proof_file FROM debts WHERE id = :id LIMIT 1");
         $stmt->execute([':id' => (int)$r['debt_id']]);
-        $paid = (float)$stmt->fetchColumn();
+        $linkedDebt = $stmt->fetch(PDO::FETCH_ASSOC) ?: [];
+        $paid = (float)($linkedDebt['paid_amount'] ?? 0);
+        if (!empty($linkedDebt['proof_file'])) $filesToDelete[] = $linkedDebt['proof_file'];
 
         if ($paid > 0) {
             throw new Exception('Data tidak bisa dihapus karena hutang sudah memiliki pembayaran.');
@@ -40,9 +43,10 @@ try {
     $stmt->execute([':id' => $id]);
 
     $pdo->commit();
+    foreach (array_unique($filesToDelete) as $file) upload_delete_file($file);
 
     redirect('pages/reimbursements/index.php?message=Data dana talangan berhasil dihapus');
-} catch (Exception $e) {
+} catch (Throwable $e) {
     if ($pdo->inTransaction()) $pdo->rollBack();
     redirect('pages/reimbursements/detail.php?id=' . $id . '&error=' . urlencode($e->getMessage()));
 }

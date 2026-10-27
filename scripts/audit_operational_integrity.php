@@ -59,7 +59,7 @@ $accountRows = $pdo->query("
     SELECT a.id,a.account_name,a.opening_balance,a.current_balance,
            COALESCE(SUM(CASE WHEN t.type='income' THEN t.amount ELSE -t.amount END),0) AS transaction_effect
     FROM finance_accounts a
-    LEFT JOIN transactions t ON t.account_id=a.id
+    LEFT JOIN transactions t ON t.account_id=a.id AND t.posting_mode='posted'
     GROUP BY a.id
     ORDER BY a.id
 ")->fetchAll(PDO::FETCH_ASSOC);
@@ -80,6 +80,20 @@ foreach ($accountRows as $account) {
 $checks['finance_account_balances'] = ['mismatch_count' => count($accountMismatches), 'sample' => $accountMismatches];
 $failureCount += count($accountMismatches);
 
+audit_rows($pdo, $checks, $failureCount, 'finance_cutover_date', "
+    SELECT fs.cutover_date,first_posted.earliest_posted_date
+    FROM finance_settings fs
+    JOIN (
+        SELECT MIN(posted_date) earliest_posted_date
+        FROM (
+            SELECT MIN(transaction_date) posted_date FROM transactions WHERE posting_mode='posted'
+            UNION ALL
+            SELECT MIN(movement_date) posted_date FROM operational_fund_movements WHERE posting_mode='posted'
+        ) posted_dates
+    ) first_posted ON first_posted.earliest_posted_date IS NOT NULL
+    WHERE fs.id=1 AND fs.cutover_date>first_posted.earliest_posted_date
+");
+
 audit_rows($pdo, $checks, $failureCount, 'operational_fund_balances', "
     SELECT f.id,f.fund_code,f.total_received,f.total_used,f.total_returned,f.total_personal_advance,f.current_balance,
            COALESCE(SUM(CASE WHEN m.movement_type='receive' THEN m.amount ELSE 0 END),0) AS computed_received,
@@ -87,7 +101,7 @@ audit_rows($pdo, $checks, $failureCount, 'operational_fund_balances', "
            COALESCE(SUM(CASE WHEN m.movement_type='return' THEN m.amount ELSE 0 END),0) AS computed_returned,
            COALESCE(SUM(CASE WHEN m.movement_type='adjustment' THEN m.amount ELSE 0 END),0) AS computed_adjustment
     FROM operational_funds f
-    LEFT JOIN operational_fund_movements m ON m.fund_id=f.id
+    LEFT JOIN operational_fund_movements m ON m.fund_id=f.id AND m.posting_mode='posted'
     GROUP BY f.id
     HAVING ABS(total_received-computed_received)>0.01
         OR ABS(total_used-computed_used)>0.01

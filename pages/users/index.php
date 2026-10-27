@@ -1,9 +1,7 @@
 <?php
 require_once __DIR__ . '/../../includes/auth.php';
 
-if (!has_role('super_admin', 'admin')) {
-    redirect('pages/dashboard.php');
-}
+require_permission('users.manage');
 
 $pageTitle = 'User Management - Nukari';
 
@@ -19,6 +17,10 @@ require_once __DIR__ . '/../../includes/sidebar.php';
 ?>
 
 <main class="main-content">
+
+    <?php if (!empty($_GET['error'])): ?>
+        <div class="alert alert-danger rounded-3"><?= htmlspecialchars((string)$_GET['error']); ?></div>
+    <?php endif; ?>
 
     <div class="page-header d-flex justify-content-between align-items-center flex-wrap gap-3">
         <div>
@@ -69,7 +71,7 @@ require_once __DIR__ . '/../../includes/sidebar.php';
 
                                 <td>
                                     <span class="badge rounded-pill badge-soft-blue">
-                                        <?= htmlspecialchars($user['role']); ?>
+                                        <?= htmlspecialchars(app_role_label((string)$user['role'])); ?>
                                     </span>
                                 </td>
 
@@ -117,11 +119,10 @@ require_once __DIR__ . '/../../includes/sidebar.php';
                                             </form>
                                         <?php endif; ?>
 
-                                        <a href="<?= base_url('pages/users/delete.php?id=' . $user['id']); ?>"
-                                            onclick="return confirm('Yakin ingin menghapus akun ini secara permanen? Data tidak bisa dikembalikan.')"
-                                            class="btn btn-sm btn-outline-danger">
-                                            <i class="bi bi-trash me-1"></i> Hapus
-                                        </a>
+                                        <form method="POST" action="<?= base_url('pages/users/delete.php?id=' . $user['id']); ?>" class="d-inline" onsubmit="return confirm('Yakin ingin menghapus akun ini secara permanen? Data tidak bisa dikembalikan.')">
+                                            <?= csrf_field(); ?>
+                                            <button class="btn btn-sm btn-outline-danger"><i class="bi bi-trash me-1"></i> Hapus</button>
+                                        </form>
 
                                     <?php else: ?>
                                         <span class="badge bg-secondary">Akun Anda</span>

@@ -30,51 +30,17 @@ function asset_allowed_image_ext($filename)
 
 function asset_upload_one($file, $prefix = 'asset')
 {
-    if (empty($file['name']) || empty($file['tmp_name'])) return null;
-
-    $ext = asset_allowed_image_ext($file['name']);
-    if (!$ext) throw new Exception('Foto aset hanya boleh JPG, JPEG, PNG, atau WEBP.');
-    validate_upload($file, ['image/jpeg','image/png','image/webp']);
-
-    $uploadDir = __DIR__ . '/../../uploads/assets/';
-    if (!is_dir($uploadDir)) mkdir($uploadDir, 0775, true);
-
-    $fileName = $prefix . '_' . date('YmdHis') . '_' . bin2hex(random_bytes(4)) . '.' . $ext;
-    if (!move_uploaded_file($file['tmp_name'], $uploadDir . $fileName)) {
-        throw new Exception('Gagal mengupload foto aset.');
-    }
-
-    return 'uploads/assets/' . $fileName;
+    return upload_store_file($file, 'assets', $prefix, upload_image_mimes());
 }
 
 function asset_upload_multiple($files, $prefix = 'asset')
 {
-    $paths = [];
-    if (empty($files['name']) || !is_array($files['name'])) return $paths;
-
-    foreach ($files['name'] as $i => $name) {
-        if (empty($name)) continue;
-        $file = [
-            'name' => $files['name'][$i],
-            'type' => $files['type'][$i] ?? '',
-            'tmp_name' => $files['tmp_name'][$i] ?? '',
-            'error' => $files['error'][$i] ?? UPLOAD_ERR_NO_FILE,
-            'size' => $files['size'][$i] ?? 0,
-        ];
-        if ($file['error'] !== UPLOAD_ERR_OK) continue;
-        $paths[] = asset_upload_one($file, $prefix);
-    }
-    return $paths;
+    return upload_store_multiple($files, 'assets', $prefix, upload_image_mimes(), 5242880, 10);
 }
 
 function asset_safe_delete_file($path)
 {
-    if (!$path) return;
-    $file = realpath(__DIR__ . '/../../' . $path);
-    $root = realpath(__DIR__ . '/../../uploads/assets');
-    if ($file && $root && strpos($file, $root) === 0 && file_exists($file)) {
-        @unlink($file);
-    }
+    upload_delete_file($path);
 }
 
 
@@ -94,17 +60,23 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') === 'delet
     $ph->execute([':id' => $photoId, ':asset_id' => $id]);
     $photo = $ph->fetch(PDO::FETCH_ASSOC);
     if ($photo) {
-        asset_safe_delete_file($photo['image_path']);
-        $pdo->prepare("DELETE FROM project_asset_photos WHERE id=:id")->execute([':id' => $photoId]);
+        try {
+            $pdo->beginTransaction();
+            $pdo->prepare("DELETE FROM project_asset_photos WHERE id=:id")->execute([':id' => $photoId]);
 
-        if (!empty($asset['photo']) && $asset['photo'] === $photo['image_path']) {
-            $next = $pdo->prepare("SELECT image_path FROM project_asset_photos WHERE asset_id=:asset_id ORDER BY id ASC LIMIT 1");
-            $next->execute([':asset_id' => $id]);
-            $nextPhoto = $next->fetchColumn();
-            $pdo->prepare("UPDATE assets SET photo=:photo, updated_at=NOW() WHERE id=:id")->execute([':photo' => $nextPhoto ?: null, ':id' => $id]);
+            if (!empty($asset['photo']) && $asset['photo'] === $photo['image_path']) {
+                $next = $pdo->prepare("SELECT image_path FROM project_asset_photos WHERE asset_id=:asset_id ORDER BY id ASC LIMIT 1");
+                $next->execute([':asset_id' => $id]);
+                $nextPhoto = $next->fetchColumn();
+                $pdo->prepare("UPDATE assets SET photo=:photo, updated_at=NOW() WHERE id=:id")->execute([':photo' => $nextPhoto ?: null, ':id' => $id]);
+            }
+            $pdo->commit();
+            asset_safe_delete_file($photo['image_path']);
+            $_SESSION['success'] = 'Foto aset berhasil dihapus.';
+        } catch (Throwable $e) {
+            if ($pdo->inTransaction()) $pdo->rollBack();
+            $_SESSION['error'] = $e->getMessage();
         }
-
-        $_SESSION['success'] = 'Foto aset berhasil dihapus.';
     }
     redirect('pages/assets/edit.php?id=' . $id);
 }
@@ -134,11 +106,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     if ($data[':asset_name'] === '') {
         $error = 'Nama aset wajib diisi.';
     } else {
+        $uploadedFiles = [];
         try {
+            $pdo->beginTransaction();
             $photoSql = '';
 
             if (!empty($_FILES['photo']['name'])) {
                 $newMain = asset_upload_one($_FILES['photo'], 'asset_main');
+                if ($newMain) $uploadedFiles[] = $newMain;
                 $data[':photo'] = $newMain;
                 $photoSql = ', photo = :photo';
 
@@ -147,6 +122,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             }
 
             $extraPhotos = asset_upload_multiple($_FILES['asset_photos'] ?? [], 'asset_gallery');
+            $uploadedFiles = array_merge($uploadedFiles, $extraPhotos);
             if ($extraPhotos) {
                 $insPhoto = $pdo->prepare("INSERT INTO project_asset_photos (asset_id, image_path, caption) VALUES (:asset_id, :image_path, :caption)");
                 foreach ($extraPhotos as $path) {
@@ -181,10 +157,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 WHERE id=:id
             ");
             $stmt->execute($data);
+            $pdo->commit();
 
             $_SESSION['success'] = 'Aset berhasil diperbarui.';
             redirect('pages/assets/detail.php?id=' . $id);
-        } catch (Exception $e) {
+        } catch (Throwable $e) {
+            if ($pdo->inTransaction()) $pdo->rollBack();
+            foreach (array_unique($uploadedFiles) as $path) upload_delete_file($path);
             $error = $e->getMessage();
         }
     }

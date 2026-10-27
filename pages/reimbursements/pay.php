@@ -34,6 +34,7 @@ $remaining = max((float)$r['amount'] - (float)$r['paid_amount'], 0);
 $accounts = $pdo->query("SELECT id, account_name, account_type, current_balance FROM finance_accounts WHERE status='active' ORDER BY is_default DESC, account_name ASC")->fetchAll(PDO::FETCH_ASSOC);
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+    $proofFile = null;
     try {
         $paymentDate = $_POST['payment_date'] ?: date('Y-m-d');
         $amount = rmb_money_to_number($_POST['amount'] ?? 0);
@@ -41,6 +42,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $accountId = !empty($_POST['account_id']) ? (int)$_POST['account_id'] : null;
         $notes = clean_input($_POST['notes'] ?? '');
         $proofFile = rmb_upload_file('proof_file');
+        $postingMode = finance_validate_posting_mode($_POST['posting_mode'] ?? 'posted', $_POST['historical_reason'] ?? null);
+        $historicalReason = $postingMode === 'historical' ? trim((string)($_POST['historical_reason'] ?? '')) : null;
 
         if ($amount <= 0) throw new Exception('Nominal pembayaran harus lebih dari 0.');
         if (!$accountId) throw new Exception('Pilih akun kas/bank perusahaan yang digunakan untuk pembayaran.');
@@ -52,14 +55,16 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
         $stmt = $pdo->prepare("
             INSERT INTO debt_payments
-            (debt_id, payment_date, amount, payment_method, account_id, transaction_id, proof_file, notes, created_by, created_at)
+            (debt_id, payment_date, amount, posting_mode, historical_reason, payment_method, account_id, transaction_id, proof_file, notes, created_by, created_at)
             VALUES
-            (:debt_id, :payment_date, :amount, :method, :account_id, NULL, :proof_file, :notes, :created_by, NOW())
+            (:debt_id, :payment_date, :amount, :posting_mode, :historical_reason, :method, :account_id, NULL, :proof_file, :notes, :created_by, NOW())
         ");
         $stmt->execute([
             ':debt_id' => $debtId,
             ':payment_date' => $paymentDate,
             ':amount' => $amount,
+            ':posting_mode' => $postingMode,
+            ':historical_reason' => $historicalReason,
             ':method' => $method,
             ':account_id' => $accountId,
             ':proof_file' => $proofFile,
@@ -73,9 +78,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
         $stmt = $pdo->prepare("
             INSERT INTO reimbursement_payments
-            (reimbursement_id, debt_payment_id, transaction_id, payment_date, amount, payment_method, proof_file, notes, created_by, created_at)
+            (reimbursement_id, debt_payment_id, transaction_id, payment_date, amount, posting_mode, historical_reason, payment_method, proof_file, notes, created_by, created_at)
             VALUES
-            (:reimbursement_id, :debt_payment_id, :transaction_id, :payment_date, :amount, :payment_method, :proof_file, :notes, :created_by, NOW())
+            (:reimbursement_id, :debt_payment_id, :transaction_id, :payment_date, :amount, :posting_mode, :historical_reason, :payment_method, :proof_file, :notes, :created_by, NOW())
         ");
         $stmt->execute([
             ':reimbursement_id' => $id,
@@ -83,6 +88,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             ':transaction_id' => $transactionId,
             ':payment_date' => $paymentDate,
             ':amount' => $amount,
+            ':posting_mode' => $postingMode,
+            ':historical_reason' => $historicalReason,
             ':payment_method' => $method,
             ':proof_file' => $proofFile,
             ':notes' => $notes ?: null,
@@ -90,12 +97,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         ]);
 
         finance_sync_reimbursement_from_debt($pdo, $id);
+        log_activity($pdo, 'Reimbursement Payment', 'CREATE', finance_posting_mode_label($postingMode) . ($historicalReason ? ' — ' . $historicalReason : ''), $debtPaymentId, 'debt_payments');
 
         $pdo->commit();
 
         redirect('pages/reimbursements/detail.php?id=' . $id . '&message=Pembayaran dana talangan berhasil disimpan');
-    } catch (Exception $e) {
+    } catch (Throwable $e) {
         if ($pdo->inTransaction()) $pdo->rollBack();
+        upload_delete_file($proofFile);
         $error = $e->getMessage();
     }
 }
@@ -140,6 +149,7 @@ require_once __DIR__ . '/../../includes/sidebar.php';
                     <option value="other">Lainnya</option>
                 </select>
             </div>
+            <?php if (finance_user_can_use_non_posting()): ?><div class="col-md-12"><label class="form-label fw-semibold">Dampak Saldo</label><select name="posting_mode" id="postingMode" class="form-select"><option value="posted">Pembayaran berjalan — mengurangi saldo</option><option value="historical">Pembayaran historis — hanya memperbarui catatan talangan</option></select></div><div class="col-md-12 d-none" id="historicalReasonField"><label class="form-label fw-semibold">Alasan / Referensi Historis</label><textarea name="historical_reason" class="form-control" rows="2"></textarea></div><?php endif; ?>
             <div class="col-md-6">
                 <label class="form-label fw-semibold">Akun Kas/Bank Perusahaan</label>
                 <select name="account_id" class="form-select" required>
@@ -175,6 +185,8 @@ document.querySelectorAll('.money-input').forEach(function(input) {
         this.value = value.replace(/\B(?=(\d{3})+(?!\d))/g, '.');
     });
 });
+function syncPostingMode(){const field=document.getElementById('postingMode');if(!field)return;const historical=field.value==='historical';document.getElementById('historicalReasonField').classList.toggle('d-none',!historical);document.querySelector('[name="historical_reason"]').required=historical;}
+if(document.getElementById('postingMode')){document.getElementById('postingMode').addEventListener('change',syncPostingMode);syncPostingMode();}
 </script>
 
 <?php require_once __DIR__ . '/../../includes/footer.php'; ?>
