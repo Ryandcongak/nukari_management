@@ -73,6 +73,101 @@ function dashboard_url(string $path): string
     return '../' . ltrim($path, '/');
 }
 
+function dashboard_normalize_ip($value): ?string
+{
+    $value = trim((string) $value, " \t\n\r\0\x0B[]");
+    if ($value === '' || filter_var($value, FILTER_VALIDATE_IP) === false) {
+        return null;
+    }
+    return $value;
+}
+
+function dashboard_is_private_ipv4(string $ip): bool
+{
+    if (filter_var($ip, FILTER_VALIDATE_IP, FILTER_FLAG_IPV4) === false) {
+        return false;
+    }
+
+    $long = ip2long($ip);
+    if ($long === false) {
+        return false;
+    }
+    $long = (int) sprintf('%u', $long);
+
+    return ($long >= (int) sprintf('%u', ip2long('10.0.0.0')) && $long <= (int) sprintf('%u', ip2long('10.255.255.255')))
+        || ($long >= (int) sprintf('%u', ip2long('172.16.0.0')) && $long <= (int) sprintf('%u', ip2long('172.31.255.255')))
+        || ($long >= (int) sprintf('%u', ip2long('192.168.0.0')) && $long <= (int) sprintf('%u', ip2long('192.168.255.255')));
+}
+
+/**
+ * IP mesin yang melayani aplikasi. REMOTE_ADDR sengaja tidak digunakan karena
+ * nilai tersebut adalah IP perangkat pengunjung, bukan IP server Nukari.
+ */
+function dashboard_server_ip(): string
+{
+    $requestHost = parse_url(dashboard_url(''), PHP_URL_HOST);
+    $requestIp = dashboard_normalize_ip($requestHost);
+    $serverIp = dashboard_normalize_ip($_SERVER['SERVER_ADDR'] ?? '');
+
+    // Host yang benar-benar dipakai pengguna lebih relevan ketika berupa IP LAN.
+    if ($requestIp !== null && !in_array($requestIp, ['127.0.0.1', '::1'], true)) {
+        return $requestIp;
+    }
+    if ($serverIp !== null && !in_array($serverIp, ['127.0.0.1', '::1'], true)) {
+        return $serverIp;
+    }
+
+    // Tetap menemukan IP LAN ketika dashboard dibuka dari localhost di server.
+    if (function_exists('net_get_interfaces')) {
+        $interfaceIps = [];
+        foreach (net_get_interfaces() ?: [] as $interface) {
+            foreach ($interface['unicast'] ?? [] as $addressInfo) {
+                $interfaceIp = dashboard_normalize_ip($addressInfo['address'] ?? '');
+                if ($interfaceIp === null || in_array($interfaceIp, ['127.0.0.1', '::1'], true)) {
+                    continue;
+                }
+                if (dashboard_is_private_ipv4($interfaceIp)) {
+                    return $interfaceIp;
+                }
+                $interfaceIps[] = $interfaceIp;
+            }
+        }
+        if ($interfaceIps) {
+            return $interfaceIps[0];
+        }
+    }
+
+    $hostname = gethostname();
+    if (is_string($hostname) && $hostname !== '') {
+        $resolvedIp = dashboard_normalize_ip(gethostbyname($hostname));
+        if ($resolvedIp !== null && !in_array($resolvedIp, ['127.0.0.1', '::1'], true)) {
+            return $resolvedIp;
+        }
+    }
+
+    return $requestIp ?? $serverIp ?? 'Tidak terdeteksi';
+}
+
+function dashboard_access_address(string $serverIp): string
+{
+    $url = dashboard_url('');
+    $parts = parse_url($url);
+    $currentHost = strtolower((string) ($parts['host'] ?? ''));
+    $currentIp = dashboard_normalize_ip($currentHost);
+    $isLocalHost = $currentHost === 'localhost'
+        || in_array($currentIp, ['127.0.0.1', '::1'], true);
+
+    if ($isLocalHost && dashboard_normalize_ip($serverIp) !== null && !in_array($serverIp, ['127.0.0.1', '::1'], true)) {
+        $scheme = in_array(($parts['scheme'] ?? ''), ['http', 'https'], true) ? $parts['scheme'] : 'http';
+        $host = str_contains($serverIp, ':') ? '[' . $serverIp . ']' : $serverIp;
+        $port = isset($parts['port']) ? ':' . (int) $parts['port'] : '';
+        $path = '/' . trim((string) ($parts['path'] ?? ''), '/');
+        return rtrim($scheme . '://' . $host . $port . ($path === '/' ? '' : $path), '/') . '/';
+    }
+
+    return rtrim($url, '/') . '/';
+}
+
 function dashboard_badge_class(string $status): string
 {
     return match ($status) {
@@ -96,6 +191,8 @@ $today = date('Y-m-d');
 $todayLabel = date('d M Y');
 $currentUserName = $_SESSION['full_name'] ?? $_SESSION['name'] ?? $_SESSION['username'] ?? 'User';
 $currentRole = $_SESSION['role'] ?? '-';
+$serverIp = dashboard_server_ip();
+$systemAccessAddress = dashboard_access_address($serverIp);
 
 /* =====================================================
    DATA RINGKASAN UTAMA
@@ -304,6 +401,27 @@ require_once __DIR__ . '/../includes/sidebar.php';
         border-radius: 22px;
         padding: 18px;
         height: 100%;
+    }
+
+    .system-address {
+        min-width: 0;
+        font-size: 12px;
+        overflow-wrap: anywhere;
+    }
+
+    .copy-address-btn {
+        border: 1px solid rgba(255, 255, 255, .2);
+        background: rgba(255, 255, 255, .1);
+        color: #fff;
+        border-radius: 10px;
+        padding: 4px 8px;
+        flex: 0 0 auto;
+    }
+
+    .copy-address-btn:hover,
+    .copy-address-btn:focus {
+        background: rgba(255, 255, 255, .2);
+        color: #fff;
     }
 
     .dashboard-card {
@@ -530,9 +648,23 @@ require_once __DIR__ . '/../includes/sidebar.php';
                         <span class="text-white-50">Role</span>
                         <strong><?= htmlspecialchars(ucwords(str_replace('_', ' ', $currentRole))); ?></strong>
                     </div>
-                    <div class="d-flex justify-content-between">
+                    <div class="d-flex justify-content-between mb-3">
                         <span class="text-white-50">Status Sistem</span>
                         <strong>Aktif</strong>
+                    </div>
+                    <div class="d-flex justify-content-between mb-3 gap-3">
+                        <span class="text-white-50">IP Server</span>
+                        <strong><?= htmlspecialchars($serverIp); ?></strong>
+                    </div>
+                    <div class="border-top border-light border-opacity-25 pt-3">
+                        <div class="text-white-50 small mb-2">Alamat Akses Sistem</div>
+                        <div class="d-flex align-items-start gap-2">
+                            <strong class="system-address flex-grow-1" id="systemAccessAddress"><?= htmlspecialchars($systemAccessAddress); ?></strong>
+                            <button type="button" class="copy-address-btn" id="copySystemAddress" title="Salin alamat akses" aria-label="Salin alamat akses">
+                                <i class="bi bi-copy"></i>
+                            </button>
+                        </div>
+                        <div class="small text-white-50 mt-2" id="copyAddressStatus">Gunakan alamat ini dari perangkat yang terhubung ke jaringan yang sama.</div>
                     </div>
                 </div>
             </div>
@@ -842,6 +974,29 @@ require_once __DIR__ . '/../includes/sidebar.php';
     </div>
 
 </main>
+
+<script>
+document.getElementById('copySystemAddress')?.addEventListener('click', async function () {
+    const address = document.getElementById('systemAccessAddress')?.textContent.trim() || '';
+    const status = document.getElementById('copyAddressStatus');
+    if (!address) return;
+
+    try {
+        await navigator.clipboard.writeText(address);
+        if (status) status.textContent = 'Alamat akses berhasil disalin.';
+    } catch (error) {
+        const input = document.createElement('textarea');
+        input.value = address;
+        input.style.position = 'fixed';
+        input.style.opacity = '0';
+        document.body.appendChild(input);
+        input.select();
+        const copied = document.execCommand('copy');
+        input.remove();
+        if (status) status.textContent = copied ? 'Alamat akses berhasil disalin.' : 'Salin alamat secara manual.';
+    }
+});
+</script>
 
 <script src="<?= base_url('assets/vendor/chartjs/chart.umd.js'); ?>"></script>
 <script>
